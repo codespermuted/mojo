@@ -452,19 +452,14 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
 
     const link = g.append("g").selectAll("line").data(links).join("line")
       .attr("stroke", d => {
-        if (d.type === "parent") return borderColor;
+        if (d.type === "parent") return faintColor;
         if (d.type === "explicit") return accentColor;
-        return borderColor;
-      })
-      .attr("stroke-opacity", d => {
-        if (d.type === "parent") return 0.5;
-        if (d.type === "explicit") return 0.55;
-        return 0.35;
+        return dimColor;
       })
       .attr("stroke-width", d => {
-        if (d.type === "parent") return 0.5;
+        if (d.type === "parent") return 0.6;
         if (d.type === "explicit") return 2;
-        return 0.6;
+        return 1.2;
       })
       .attr("stroke-dasharray", d => {
         if (d.type === "parent") return "1,3";
@@ -703,9 +698,9 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
       if (!noFilter && !(highlightedIds.has(sid) && highlightedIds.has(tid))) {
         return linkDimOpacity;
       }
-      if (l.type === "parent") return 0.6;
-      if (l.type === "explicit") return 0.5;
-      return 0.06;
+      if (l.type === "parent") return 0.5;
+      if (l.type === "explicit") return 0.75;
+      return 0.4;
     });
     resetNodeOpacity();
     resetLinkOpacity();
