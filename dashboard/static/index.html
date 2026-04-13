@@ -334,6 +334,22 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
       return 7;
     };
 
+    // Classify connected vs orphan
+    const connectedIds = new Set();
+    links.forEach(l => {
+      const sid = typeof l.source === "object" ? l.source.id : l.source;
+      const tid = typeof l.target === "object" ? l.target.id : l.target;
+      connectedIds.add(sid);
+      connectedIds.add(tid);
+    });
+    nodes.forEach(n => {
+      if (statusOf(n) === "summary" || statusOf(n) === "standalone") connectedIds.add(n.id);
+    });
+    const isOrphan = d => !connectedIds.has(d.id);
+
+    const orbitRadius = Math.min(W, H) * 0.38;
+    const boundaryRadius = orbitRadius * 0.65;
+
     const sim = d3.forceSimulation(nodes)
       .force("link", d3.forceLink(links).id(d => d.id)
         .distance(d => {
@@ -349,11 +365,45 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
       .force("charge", d3.forceManyBody()
         .strength(d => statusOf(d) === "detail" ? -20 : -180)
         .distanceMax(420))
-      .force("x", d3.forceX(W / 2).strength(0.08))
-      .force("y", d3.forceY(H / 2 - 40).strength(0.08))
+      .force("orbit", d3.forceRadial(
+        d => isOrphan(d) ? orbitRadius : 0,
+        W / 2, H / 2,
+      ).strength(d => isOrphan(d) ? 0.3 : 0))
+      .force("x", d3.forceX(W / 2).strength(d => isOrphan(d) ? 0 : 0.08))
+      .force("y", d3.forceY(H / 2 - 40).strength(d => isOrphan(d) ? 0 : 0.08))
       .force("center", d3.forceCenter(W / 2, H / 2))
       .force("collision", d3.forceCollide()
         .radius(d => statusOf(d) === "detail" ? 10 : 36));
+
+    // Boundary decoration (drawn first so nodes/links overlay it)
+    const decor = g.append("g").attr("class", "boundary-decor");
+    decor.append("circle")
+      .attr("cx", W / 2).attr("cy", H / 2)
+      .attr("r", boundaryRadius)
+      .attr("fill", "none")
+      .attr("stroke", "rgba(255,255,255,0.04)")
+      .attr("stroke-width", 1)
+      .attr("stroke-dasharray", "4,8");
+    decor.append("text")
+      .attr("x", W / 2)
+      .attr("y", H / 2 - boundaryRadius - 8)
+      .attr("text-anchor", "middle")
+      .style("font-size", "9px")
+      .style("letter-spacing", "0.1em")
+      .style("text-transform", "uppercase")
+      .style("fill", "rgba(255,255,255,0.12)")
+      .style("pointer-events", "none")
+      .text("connected");
+    decor.append("text")
+      .attr("x", W / 2)
+      .attr("y", H / 2 - orbitRadius - 8)
+      .attr("text-anchor", "middle")
+      .style("font-size", "9px")
+      .style("letter-spacing", "0.1em")
+      .style("text-transform", "uppercase")
+      .style("fill", "rgba(255,255,255,0.08)")
+      .style("pointer-events", "none")
+      .text("unlinked");
 
     const labelColor = getComputedStyle(document.documentElement).getPropertyValue("--text-mid").trim() || "rgba(0,0,0,0.55)";
 
@@ -602,9 +652,14 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
     const noFilter = !hasFilter;
 
     const nodeOpacity = d => {
-      if (noFilter) return statusOf(d) === "detail" ? 0.5 : 1;
+      if (noFilter) {
+        if (isOrphan(d)) return 0.35;
+        if (statusOf(d) === "detail") return 0.5;
+        return 1;
+      }
       const matched = highlightedIds && highlightedIds.has(d.id);
-      if (!matched) return dimOpacity;
+      if (!matched) return 0.05;
+      if (isOrphan(d)) return 0.6;
       if (statusOf(d) === "detail") return 0.7;
       return 1;
     };
@@ -705,10 +760,10 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
     <div style={{ width:"100%", height:"100%", position:"relative" }}>
       <svg ref={svgRef} style={{ width:"100%", height:"100%", background:"var(--graph-bg)", borderRadius:8 }} />
       <div style={{ position:"absolute", bottom:12, left:12, right:12, display:"flex", alignItems:"center", gap:12, fontSize:10, color:"var(--text-dim)", flexWrap:"wrap" }}>
-        <span>● large = summaries & standalone</span>
-        <span>○ small = details</span>
+        <span>● connected knowledge</span>
+        <span>○ unlinked details (outer ring)</span>
         <span><span style={{ display:"inline-block", width:20, height:2, background:"rgba(78,205,196,0.5)", verticalAlign:"middle", marginRight:4 }}/>related</span>
-        <span style={{ color:"var(--text-faint)" }}>hover edge to edit/remove · shift+drag to connect</span>
+        <span style={{ color:"var(--text-faint)" }}>hover edge to edit · shift+drag to connect</span>
         <div style={{ flex:1 }} />
         {noReasonCount > 0 && onFillReasons && (
           <button
