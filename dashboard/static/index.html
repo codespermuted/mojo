@@ -173,35 +173,60 @@ const SrcBadge = ({ s }) => {
 
 // ─── Graph View ──────────────────────────────────────────
 
+// Overly generic tags that don't meaningfully connect items.
+const STOP_TAGS = new Set([
+  "git-extracted", "test", "e2e", "performance",
+  "python", "feature_engineering", "production",
+  "debug_playbook", "architecture_decision", "anti_pattern",
+  "domain_rule", "code_pattern", "tool_preference",
+]);
+const IMPLICIT_SHARED_THRESHOLD = 3;
+
 function GraphView({ items, highlightedIds, onSelectNode }) {
   const svgRef = useRef(null);
   const hasFilter = highlightedIds && highlightedIds.size !== items.length;
 
-  const { nodes, links } = useMemo(() => {
+  const { nodes, links, isolatedIds } = useMemo(() => {
     const ns = items.map(it => ({ ...it, x:0, y:0 }));
     const idSet = new Set(items.map(i => i.id));
     const ls = [];
     const seen = new Set();
+    const connected = new Set();
 
     items.forEach(it => {
       (it.related_ids || []).forEach(rid => {
         if (idSet.has(rid)) {
           const key = [it.id, rid].sort().join("-");
-          if (!seen.has(key)) { seen.add(key); ls.push({ source:it.id, target:rid, type:"explicit" }); }
+          if (!seen.has(key)) {
+            seen.add(key);
+            ls.push({ source:it.id, target:rid, type:"explicit" });
+            connected.add(it.id);
+            connected.add(rid);
+          }
         }
       });
     });
 
     for (let i = 0; i < items.length; i++) {
+      const tagsA = (items[i].tags || []).filter(t => !STOP_TAGS.has(t));
+      if (tagsA.length === 0) continue;
       for (let j = i + 1; j < items.length; j++) {
-        const shared = (items[i].tags || []).filter(t => (items[j].tags || []).includes(t));
-        if (shared.length >= 2) {
+        const tagsB = (items[j].tags || []).filter(t => !STOP_TAGS.has(t));
+        const shared = tagsA.filter(t => tagsB.includes(t));
+        if (shared.length >= IMPLICIT_SHARED_THRESHOLD) {
           const key = [items[i].id, items[j].id].sort().join("-");
-          if (!seen.has(key)) { seen.add(key); ls.push({ source:items[i].id, target:items[j].id, type:"implicit", shared }); }
+          if (!seen.has(key)) {
+            seen.add(key);
+            ls.push({ source:items[i].id, target:items[j].id, type:"implicit", shared });
+            connected.add(items[i].id);
+            connected.add(items[j].id);
+          }
         }
       }
     }
-    return { nodes: ns, links: ls };
+
+    const isolated = new Set(items.filter(it => !connected.has(it.id)).map(it => it.id));
+    return { nodes: ns, links: ls, isolatedIds: isolated };
   }, [items]);
 
   useEffect(() => {
@@ -215,20 +240,33 @@ function GraphView({ items, highlightedIds, onSelectNode }) {
     const zoom = d3.zoom().scaleExtent([0.3, 3]).on("zoom", (e) => g.attr("transform", e.transform));
     svg.call(zoom);
 
+    // Pin isolated nodes to a strip along the bottom so they don't drift
+    // into the main cluster and dominate it.
+    const isolatedStripY = H - 50;
+    let isolatedIdx = 0;
+    const isolatedList = nodes.filter(n => isolatedIds.has(n.id));
+    isolatedList.forEach(n => {
+      n.fx = 40 + (isolatedIdx++) * 70 - (isolatedList.length * 35);
+      n.fx += W / 2;
+      n.fy = isolatedStripY;
+    });
+
     const sim = d3.forceSimulation(nodes)
       .force("link", d3.forceLink(links).id(d => d.id)
-        .distance(d => d.type === "explicit" ? 80 : 130)
-        .strength(d => d.type === "explicit" ? 0.6 : 0.15))
-      .force("charge", d3.forceManyBody().strength(-250))
-      .force("center", d3.forceCenter(W/2, H/2))
+        .distance(d => d.type === "explicit" ? 80 : 160)
+        .strength(d => d.type === "explicit" ? 0.7 : 0.08))
+      .force("charge", d3.forceManyBody().strength(-260))
+      .force("center", d3.forceCenter(W/2, H/2 - 40))
       .force("collision", d3.forceCollide().radius(28));
 
     const labelColor = getComputedStyle(document.documentElement).getPropertyValue("--text-mid").trim() || "rgba(0,0,0,0.55)";
 
     const link = g.append("g").selectAll("line").data(links).join("line")
-      .attr("stroke", d => d.type === "explicit" ? "rgba(78,205,196,0.45)" : "rgba(128,128,128,0.25)")
-      .attr("stroke-width", d => d.type === "explicit" ? 1.5 : 0.8)
-      .attr("stroke-dasharray", d => d.type === "implicit" ? "3,3" : "none");
+      .attr("stroke", d => d.type === "explicit"
+        ? "rgba(78,205,196,0.5)"
+        : "rgba(128,128,128,0.12)")
+      .attr("stroke-width", d => d.type === "explicit" ? 2 : 0.5)
+      .attr("stroke-dasharray", d => d.type === "implicit" ? "2,4" : "none");
 
     const node = g.append("g").selectAll("g").data(nodes).join("g")
       .style("cursor", "pointer")
@@ -238,9 +276,13 @@ function GraphView({ items, highlightedIds, onSelectNode }) {
         .on("end",   (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }));
 
     const dimOpacity = 0.08;
+    const isolatedBase = 0.45;
     const isDimmed = d => hasFilter && highlightedIds && !highlightedIds.has(d.id);
 
-    node.style("opacity", d => isDimmed(d) ? dimOpacity : 1);
+    node.style("opacity", d => {
+      if (isDimmed(d)) return dimOpacity;
+      return isolatedIds.has(d.id) ? isolatedBase : 1;
+    });
     link.style("opacity", l => {
       if (!hasFilter) return 1;
       const sid = typeof l.source === "object" ? l.source.id : l.source;
@@ -288,6 +330,21 @@ function GraphView({ items, highlightedIds, onSelectNode }) {
         return sid === d.id || tid === d.id ? 1 : 0.05;
       });
     }).on("mouseleave", () => { node.style("opacity", 1); link.style("opacity", 1); });
+
+    // "Unlinked" label above isolated strip
+    if (isolatedList.length > 0) {
+      g.append("text")
+        .attr("x", W / 2)
+        .attr("y", isolatedStripY - 24)
+        .attr("text-anchor", "middle")
+        .style("font-size", "10px")
+        .style("font-family", "'Outfit', sans-serif")
+        .style("fill", labelColor)
+        .style("letter-spacing", "0.08em")
+        .style("text-transform", "uppercase")
+        .style("pointer-events", "none")
+        .text(`unlinked (${isolatedList.length})`);
+    }
 
     let fitted = false;
     const fit = () => {
@@ -511,6 +568,7 @@ function MojoDashboard() {
   const [search, setSearch] = useState("");
   const [selDomain, setSelDomain] = useState(null);
   const [selType, setSelType] = useState(null);
+  const [selSource, setSelSource] = useState(null);
   const [expandedId, setExpandedId] = useState(null);
   const [showArchived, setShowArchived] = useState(false);
   const [view, setView] = useState("list");
@@ -551,8 +609,18 @@ function MojoDashboard() {
     if (search && !`${i.title} ${i.content} ${(i.tags || []).join(" ")}`.toLowerCase().includes(search.toLowerCase())) return false;
     if (selDomain && !i.domain.startsWith(selDomain)) return false;
     if (selType && i.type !== selType) return false;
+    if (selSource && i.source !== selSource) return false;
     return true;
   });
+
+  const SOURCE_META = {
+    "memory-seed": { label: "SEED", color: "#A78BFA" },
+    "git-scan":    { label: "GIT",  color: "#FBBF24" },
+    "llm-extract": { label: "LLM",  color: "#34D399" },
+    "manual":      { label: "MAN",  color: "#94A3B8" },
+  };
+  const sourceCounts = {};
+  active.forEach(i => { sourceCounts[i.source] = (sourceCounts[i.source] || 0) + 1; });
 
   const domainTree = {};
   active.forEach(i => {
@@ -663,6 +731,21 @@ function MojoDashboard() {
               <span>{v.icon} {v.label}</span><span style={{ fontSize:10, color:"var(--text-faint)" }}>{cnt}</span>
             </div>;
           })}
+
+          <div style={{ padding:"14px 12px 8px", fontSize:9.5, color:"var(--text-faint)", textTransform:"uppercase", letterSpacing:"0.1em", borderTop:"1px solid var(--border)", marginTop:10 }}>Sources</div>
+          <div onClick={() => setSelSource(null)}
+            style={{ padding:"4px 12px", cursor:"pointer", fontSize:11.5, color: !selSource ? "var(--accent)" : "var(--text-mid)", background: !selSource ? "var(--accent-bg)" : "transparent", borderLeft: !selSource ? "2px solid var(--accent)" : "2px solid transparent", display:"flex", justifyContent:"space-between" }}>
+            <span>All</span><span style={{ fontSize:10, color:"var(--text-faint)" }}>{active.length}</span>
+          </div>
+          {Object.entries(SOURCE_META).map(([k, meta]) => {
+            const cnt = sourceCounts[k] || 0;
+            return (
+              <div key={k} onClick={() => setSelSource(selSource === k ? null : k)}
+                style={{ padding:"4px 12px", cursor:"pointer", fontSize:11.5, color: selSource === k ? meta.color : "var(--text-mid)", background: selSource === k ? `${meta.color}18` : "transparent", borderLeft: selSource === k ? `2px solid ${meta.color}` : "2px solid transparent", display:"flex", justifyContent:"space-between", opacity: cnt === 0 ? 0.35 : 1 }}>
+                <span>{meta.label}</span><span style={{ fontSize:10, color:"var(--text-faint)" }}>{cnt}</span>
+              </div>
+            );
+          })}
         </div>
 
         {/* Main */}
@@ -674,11 +757,12 @@ function MojoDashboard() {
                 style={{ width:"100%", padding:"9px 12px 9px 32px", borderRadius:7, border:"1px solid var(--border-strong)", background:"var(--card)", color:"var(--text-main)", fontSize:12.5, outline:"none", fontFamily:"'JetBrains Mono',monospace" }} />
               <span style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)", color:"var(--text-faint)", fontSize:13 }}>⌕</span>
             </div>
-            {(selDomain || selType || search) && (
+            {(selDomain || selType || selSource || search) && (
               <div style={{ display:"flex", gap:5, marginTop:8, flexWrap:"wrap", alignItems:"center" }}>
                 <span style={{ fontSize:10, color:"var(--text-dim)" }}>Filters:</span>
                 {selDomain && <span onClick={() => setSelDomain(null)} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:"var(--accent-bg)", color:"var(--accent)", cursor:"pointer" }}>{selDomain} ×</span>}
                 {selType && <span onClick={() => setSelType(null)} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:`${TYPES[selType]?.color}18`, color:TYPES[selType]?.color, cursor:"pointer" }}>{TYPES[selType]?.label} ×</span>}
+                {selSource && <span onClick={() => setSelSource(null)} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:`${SOURCE_META[selSource]?.color}18`, color:SOURCE_META[selSource]?.color, cursor:"pointer" }}>{SOURCE_META[selSource]?.label} ×</span>}
                 {search && <span onClick={() => setSearch("")} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:"var(--bar-track)", color:"var(--text-mid)", cursor:"pointer" }}>"{search}" ×</span>}
                 <span style={{ fontSize:10, color:"var(--text-faint)" }}>({filtered.length})</span>
               </div>

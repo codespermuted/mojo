@@ -324,9 +324,12 @@ def scan_and_save(repo_path: str, max_commits: int = 200,
             "domain": domain,
             "title": cand["commit_subject"][:50],
             "content": content[:500],
-            "reasoning": f"Extracted from git commit {cand['commit_hash']} "
-                         f"({cand['commit_date'][:10]}). "
-                         f"Signal: {cand['reason']}",
+            "reasoning": (
+                f"Auto-extracted from git {cand['type']} commit {cand['commit_hash']} "
+                f"({cand['commit_date'][:10]}). "
+                f"Signal: {cand['reason']}. "
+                f"Original message: {cand['commit_subject'][:80]}"
+            ),
             "confidence": _signal_to_confidence(cand["signal_strength"]),
             "source_session_id": f"git-scan-{cand['commit_hash']}",
             "related_ids": [],

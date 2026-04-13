@@ -73,9 +73,15 @@ project/fastapi
   -  [C] Refactor logic to handle OpenAPI and Swagger UI escaping data
 ```
 
-The bracketed letter is Mojo's grade (A Verified → F Deprecated). Items scanned
-from git histories start at **C · Reference** and get promoted as they
-accumulate human approval or reuse counts.
+The bracketed letter is Mojo's evidence-based grade
+(A Verified → F Contested). Items scanned from git histories start at
+**C · Reported** and are promoted as they accumulate human approval,
+reasoning, or cross-references.
+
+> **Note:** Rule-based extraction produces Grade C items by default. Running
+> the LLM pipeline (`python -m extract.pipeline`) upgrades them to Grade B
+> (Corroborated) with structured reasoning. See
+> [With or Without an API Key](#with-or-without-an-api-key).
 
 ### LLM Structuring Cost (one session benchmark)
 
