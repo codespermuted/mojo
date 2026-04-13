@@ -13,6 +13,24 @@
 2. **Token-efficient** — a packer keeps the injected context inside a configurable budget and applies an A–F grading system.
 3. **Cost-aware by design** — rule-based signals are free; LLM calls only run on sessions that actually contain novel knowledge.
 
+## How Knowledge Grows
+
+Mojo organizes every captured item into one of three tiers. All three feed
+into the same SQLite store, the same dashboard, and the same CLAUDE.md
+injection, but they answer different questions about *where* the knowledge
+came from.
+
+| Tier              | Source              | Method                                 | Default Grade | Cost                |
+|-------------------|---------------------|----------------------------------------|---------------|---------------------|
+| **T1 · Stored**   | Your expertise      | Seed import, manual dashboard entry    | **B+**        | Free                |
+| **T2 · Mined**    | Past work           | Git history / folder scan (rule-based) | **C**         | Free                |
+| **T3 · Live**     | Ongoing work        | Claude Code session hooks + LLM        | **A–B**       | ~$0.04 / session    |
+
+Over time, T2 and T3 items get approved, reused, and cross-linked — which
+promotes them up the [A–F grade](#evidence-based-grading-af) hierarchy. The
+three tiers compound: every session makes the next one smarter without any
+single source being mandatory.
+
 ## Quick Start
 
 ```bash
@@ -124,32 +142,23 @@ That's roughly **$1–5 / month** at 5–10 sessions per day.
 ## Architecture
 
 ```
-Claude Code session
-        │
-        ▼
-Native hooks (SessionEnd, Stop)          ← zero workflow change
-        │
-        ▼
-JSONL parser + correction-signal detection   (free, rule-based)
-        │
-        ▼
-Haiku filter      ~$0.001 / session          (noise removal)
-        │  (only if signal present)
-        ▼
-Sonnet structuring ~$0.005 / candidate       (title, content, reasoning, tags)
-        │
-        ▼
-SQLite store + TF-IDF dedup
-        │
-        ▼
-Token-budget packer (A–F grades, type weights, recency)
-        │
-        ▼
-CLAUDE.md + SKILL.md files
-        │
-        ▼
-Next Claude Code session reads the injected knowledge automatically
+T1 · Stored ──┐
+  seed import │
+  manual entry│
+              │
+T2 · Mined  ──┼──► SQLite store ──► Packer ──► CLAUDE.md / SKILL.md
+  git scan    │   (dedup, grades)  (budget)         │
+  folder scan │         ▲                            ▼
+              │         │                  Next Claude Code session
+T3 · Live   ──┘         │                            │
+  session hook + LLM    │                            │
+  (Haiku filter +       └────── usage feedback ──────┘
+   Sonnet structure)           (reuses, approvals,
+                                cross-references)
 ```
+
+The evidence-based grader sits between the store and the packer, so only
+items that have actually earned trust make it into the final token budget.
 
 ## Storage
 

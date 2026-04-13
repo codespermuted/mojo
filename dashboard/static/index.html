@@ -82,11 +82,34 @@ const gradeOf = (it) => it.grade || "C";
 
 const deriveSource = (it) => {
   const s = it.source_session_id || "";
-  if (s === "memory-seed") return "memory-seed";
+  if (s === "memory-seed" || s.startsWith("example")) return "memory-seed";
   if (s.startsWith("git-scan") || s.startsWith("git-")) return "git-scan";
   if (s.startsWith("manual")) return "manual";
   return "llm-extract";
 };
+
+// Three-tier knowledge model
+const TIERS = {
+  T1: { key:"T1", label:"Stored", color:"#A78BFA",
+        desc:"Knowledge you already know",
+        long:"Seeded or manually entered",
+        sources:["memory-seed","manual"] },
+  T2: { key:"T2", label:"Mined",  color:"#FBBF24",
+        desc:"Unearthed from past work",
+        long:"Rule-based git / folder scan",
+        sources:["git-scan"] },
+  T3: { key:"T3", label:"Live",   color:"#34D399",
+        desc:"Captured in real time",
+        long:"Claude Code session + LLM extraction",
+        sources:["llm-extract"] },
+};
+const SOURCE_TO_TIER = {
+  "memory-seed": "T1",
+  "manual":      "T1",
+  "git-scan":    "T2",
+  "llm-extract": "T3",
+};
+const tierOf = (it) => SOURCE_TO_TIER[it.source] || "T3";
 
 const isNew = (d) => {
   if (!d.created_at) return false;
@@ -161,26 +184,20 @@ const TypeBadge = ({ type }) => {
   return <Badge bg={`${t.color}15`} color={t.color} border={`${t.color}30`}>{t.icon} {t.label}</Badge>;
 };
 
-const SrcBadge = ({ s }) => {
-  const c = {
-    "memory-seed": { l:"SEED", bg:"#6C5CE718", c:"#A78BFA", b:"#6C5CE730" },
-    "llm-extract": { l:"LLM",  bg:"#10B98118", c:"#34D399", b:"#10B98130" },
-    "git-scan":    { l:"GIT",  bg:"#F5920018", c:"#FBBF24", b:"#F5920030" },
-    "manual":      { l:"MAN",  bg:"#64748B18", c:"#94A3B8", b:"#64748B30" },
-  }[s] || { l:"?", bg:"#ffffff08", c:"#999", b:"#ffffff15" };
-  return <Badge bg={c.bg} color={c.c} border={c.b}>{c.l}</Badge>;
+const TierBadge = ({ tier }) => {
+  const t = TIERS[tier] || TIERS.T3;
+  return (
+    <Badge bg={`${t.color}18`} color={t.color} border={`${t.color}30`}>
+      {t.key}·{t.label}
+    </Badge>
+  );
 };
 
 // ─── Graph View ──────────────────────────────────────────
 
-// Overly generic tags that don't meaningfully connect items.
-const STOP_TAGS = new Set([
-  "git-extracted", "test", "e2e", "performance",
-  "python", "feature_engineering", "production",
-  "debug_playbook", "architecture_decision", "anti_pattern",
-  "domain_rule", "code_pattern", "tool_preference",
-]);
-const IMPLICIT_SHARED_THRESHOLD = 3;
+// Generic tags that produce noisy implicit links without conveying meaning.
+const STOP_TAGS = new Set(["git-extracted", "test", "e2e", "production"]);
+const IMPLICIT_SHARED_THRESHOLD = 2;
 
 function GraphView({ items, highlightedIds, onSelectNode }) {
   const svgRef = useRef(null);
@@ -264,9 +281,9 @@ function GraphView({ items, highlightedIds, onSelectNode }) {
     const link = g.append("g").selectAll("line").data(links).join("line")
       .attr("stroke", d => d.type === "explicit"
         ? "rgba(78,205,196,0.5)"
-        : "rgba(128,128,128,0.12)")
-      .attr("stroke-width", d => d.type === "explicit" ? 2 : 0.5)
-      .attr("stroke-dasharray", d => d.type === "implicit" ? "2,4" : "none");
+        : "rgba(255,255,255,0.06)")
+      .attr("stroke-width", d => d.type === "explicit" ? 2 : 0.6)
+      .attr("stroke-dasharray", d => d.type === "implicit" ? "3,4" : "none");
 
     const node = g.append("g").selectAll("g").data(nodes).join("g")
       .style("cursor", "pointer")
@@ -293,8 +310,8 @@ function GraphView({ items, highlightedIds, onSelectNode }) {
     node.append("circle")
       .attr("r", d => 8 + Math.min((d.usage_count || 0) * 2, 10))
       .attr("fill", d => (GRADES[gradeOf(d)]?.color || "#999") + "30")
-      .attr("stroke", d => GRADES[gradeOf(d)]?.color || "#999")
-      .attr("stroke-width", d => d.approved ? 2 : 1)
+      .attr("stroke", d => TIERS[tierOf(d)]?.color || "#999")
+      .attr("stroke-width", d => d.approved ? 2.2 : 1.2)
       .attr("stroke-dasharray", d => d.approved ? "none" : "3,2");
 
     node.append("text")
@@ -501,7 +518,7 @@ function KCard({ item, isExpanded, onToggle, onApprove, onArchive, onDelete, onE
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap", marginBottom:5 }}>
             <TypeBadge type={item.type} />
-            <SrcBadge s={item.source} />
+            <TierBadge tier={tierOf(item)} />
             {!item.approved && <span style={{ fontSize:10, color:"#D97706", fontWeight:700 }}>PENDING</span>}
             {isNew(item) && <Badge bg="#10B98120" color="#34D399" border="#10B98130">NEW</Badge>}
             {isModified(item) && !isNew(item) && <Badge bg="#6366F120" color="#818CF8" border="#6366F130">MODIFIED</Badge>}
@@ -609,18 +626,12 @@ function MojoDashboard() {
     if (search && !`${i.title} ${i.content} ${(i.tags || []).join(" ")}`.toLowerCase().includes(search.toLowerCase())) return false;
     if (selDomain && !i.domain.startsWith(selDomain)) return false;
     if (selType && i.type !== selType) return false;
-    if (selSource && i.source !== selSource) return false;
+    if (selSource && tierOf(i) !== selSource) return false;
     return true;
   });
 
-  const SOURCE_META = {
-    "memory-seed": { label: "SEED", color: "#A78BFA" },
-    "git-scan":    { label: "GIT",  color: "#FBBF24" },
-    "llm-extract": { label: "LLM",  color: "#34D399" },
-    "manual":      { label: "MAN",  color: "#94A3B8" },
-  };
-  const sourceCounts = {};
-  active.forEach(i => { sourceCounts[i.source] = (sourceCounts[i.source] || 0) + 1; });
+  const tierCounts = { T1: 0, T2: 0, T3: 0 };
+  active.forEach(i => { tierCounts[tierOf(i)]++; });
 
   const domainTree = {};
   active.forEach(i => {
@@ -641,13 +652,6 @@ function MojoDashboard() {
 
   const pending = active.filter(i => !i.approved).length;
   const avgConf = active.length ? active.reduce((s, i) => s + i.confidence, 0) / active.length : 0;
-  const srcCount = { seed:0, llm:0, git:0, manual:0 };
-  active.forEach(i => {
-    if (i.source === "memory-seed") srcCount.seed++;
-    else if (i.source === "llm-extract") srcCount.llm++;
-    else if (i.source === "git-scan") srcCount.git++;
-    else srcCount.manual++;
-  });
 
   return (
     <div style={{ minHeight:"100vh", background:"var(--bg)", color:"var(--text-main)" }}>
@@ -688,7 +692,6 @@ function MojoDashboard() {
             { l:"Approved",   v:active.length - pending,                              s:`${pending} pending`, c: pending > 0 ? "#D97706" : "var(--accent)" },
             { l:"Confidence", v:`${(avgConf*100) | 0}%`,                              s:"average" },
             { l:"Reuses",     v:active.reduce((s, i) => s + (i.usage_count || 0), 0), s:"total" },
-            { l:"Sources",    v:`${srcCount.seed}·${srcCount.llm}·${srcCount.git}${srcCount.manual ? `·${srcCount.manual}` : ""}`, s:"seed·llm·git"+(srcCount.manual?"·man":""), fs:13 },
           ].map((st, i) => (
             <div key={i} style={{ background:"var(--card)", borderRadius:7, padding:"10px 12px", border:"1px solid var(--border)" }}>
               <div style={{ fontSize:9.5, color:"var(--text-dim)", textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:3 }}>{st.l}</div>
@@ -696,6 +699,18 @@ function MojoDashboard() {
               <div style={{ fontSize:9.5, color: st.c || "var(--text-dim)" }}>{st.s}</div>
             </div>
           ))}
+          <div style={{ background:"var(--card)", borderRadius:7, padding:"10px 12px", border:"1px solid var(--border)" }}>
+            <div style={{ fontSize:9.5, color:"var(--text-dim)", textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:4 }}>Knowledge Tiers</div>
+            {["T1","T2","T3"].map(k => {
+              const t = TIERS[k];
+              return (
+                <div key={k} style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", fontSize:10.5, lineHeight:1.35 }}>
+                  <span style={{ color:t.color, fontWeight:600 }}>{k} · {t.label}</span>
+                  <span style={{ color:"var(--text-main)", fontWeight:700, fontFamily:"'Outfit',sans-serif" }}>{tierCounts[k]}</span>
+                </div>
+              );
+            })}
+          </div>
         </div>
       </div>
 
@@ -732,17 +747,18 @@ function MojoDashboard() {
             </div>;
           })}
 
-          <div style={{ padding:"14px 12px 8px", fontSize:9.5, color:"var(--text-faint)", textTransform:"uppercase", letterSpacing:"0.1em", borderTop:"1px solid var(--border)", marginTop:10 }}>Sources</div>
+          <div style={{ padding:"14px 12px 8px", fontSize:9.5, color:"var(--text-faint)", textTransform:"uppercase", letterSpacing:"0.1em", borderTop:"1px solid var(--border)", marginTop:10 }}>Knowledge Tiers</div>
           <div onClick={() => setSelSource(null)}
             style={{ padding:"4px 12px", cursor:"pointer", fontSize:11.5, color: !selSource ? "var(--accent)" : "var(--text-mid)", background: !selSource ? "var(--accent-bg)" : "transparent", borderLeft: !selSource ? "2px solid var(--accent)" : "2px solid transparent", display:"flex", justifyContent:"space-between" }}>
             <span>All</span><span style={{ fontSize:10, color:"var(--text-faint)" }}>{active.length}</span>
           </div>
-          {Object.entries(SOURCE_META).map(([k, meta]) => {
-            const cnt = sourceCounts[k] || 0;
+          {["T1","T2","T3"].map(k => {
+            const t = TIERS[k];
+            const cnt = tierCounts[k] || 0;
             return (
-              <div key={k} onClick={() => setSelSource(selSource === k ? null : k)}
-                style={{ padding:"4px 12px", cursor:"pointer", fontSize:11.5, color: selSource === k ? meta.color : "var(--text-mid)", background: selSource === k ? `${meta.color}18` : "transparent", borderLeft: selSource === k ? `2px solid ${meta.color}` : "2px solid transparent", display:"flex", justifyContent:"space-between", opacity: cnt === 0 ? 0.35 : 1 }}>
-                <span>{meta.label}</span><span style={{ fontSize:10, color:"var(--text-faint)" }}>{cnt}</span>
+              <div key={k} onClick={() => setSelSource(selSource === k ? null : k)} title={t.long}
+                style={{ padding:"4px 12px", cursor:"pointer", fontSize:11.5, color: selSource === k ? t.color : "var(--text-mid)", background: selSource === k ? `${t.color}18` : "transparent", borderLeft: selSource === k ? `2px solid ${t.color}` : "2px solid transparent", display:"flex", justifyContent:"space-between", opacity: cnt === 0 ? 0.4 : 1 }}>
+                <span>{k} · {t.label}</span><span style={{ fontSize:10, color:"var(--text-faint)" }}>{cnt}</span>
               </div>
             );
           })}
@@ -762,7 +778,7 @@ function MojoDashboard() {
                 <span style={{ fontSize:10, color:"var(--text-dim)" }}>Filters:</span>
                 {selDomain && <span onClick={() => setSelDomain(null)} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:"var(--accent-bg)", color:"var(--accent)", cursor:"pointer" }}>{selDomain} ×</span>}
                 {selType && <span onClick={() => setSelType(null)} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:`${TYPES[selType]?.color}18`, color:TYPES[selType]?.color, cursor:"pointer" }}>{TYPES[selType]?.label} ×</span>}
-                {selSource && <span onClick={() => setSelSource(null)} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:`${SOURCE_META[selSource]?.color}18`, color:SOURCE_META[selSource]?.color, cursor:"pointer" }}>{SOURCE_META[selSource]?.label} ×</span>}
+                {selSource && <span onClick={() => setSelSource(null)} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:`${TIERS[selSource]?.color}18`, color:TIERS[selSource]?.color, cursor:"pointer" }}>{selSource} · {TIERS[selSource]?.label} ×</span>}
                 {search && <span onClick={() => setSearch("")} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:"var(--bar-track)", color:"var(--text-mid)", cursor:"pointer" }}>"{search}" ×</span>}
                 <span style={{ fontSize:10, color:"var(--text-faint)" }}>({filtered.length})</span>
               </div>
