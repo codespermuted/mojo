@@ -4,8 +4,11 @@ Run: python dashboard/server.py
 Opens http://localhost:8765 in the default browser.
 """
 
+import hashlib
 import json
+import os
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -21,8 +24,11 @@ from db_ops import (  # noqa: E402
     CONFIDENCE_GRADES,
     evidence_based_grade,
     get_db,
+    get_details_for,
     get_stats,
     init_db,
+    link_detail_to_summary,
+    log_extraction_cost,
     save_knowledge,
 )
 
@@ -45,6 +51,7 @@ class KnowledgeIn(BaseModel):
     related_ids: list[str] = []
     approved: int = 1
     source_session_id: str = "manual"
+    status: str = "standalone"
 
 
 class KnowledgeUpdate(BaseModel):
@@ -57,6 +64,12 @@ class KnowledgeUpdate(BaseModel):
     related_ids: Optional[list[str]] = None
     domain: Optional[str] = None
     type: Optional[str] = None
+    status: Optional[str] = None
+    parent_id: Optional[str] = None
+
+
+class StructureRequest(BaseModel):
+    detail_ids: list[str]
 
 
 # ─── Helpers ─────────────────────────────────────────────────
@@ -146,6 +159,9 @@ def create_knowledge(item: KnowledgeIn):
         "tags": item.tags,
         "usage_count": 0,
         "approved": item.approved,
+        "status": item.status or "standalone",
+        "parent_id": None,
+        "detail_ids": [],
     }
     db = get_db()
     try:
@@ -223,6 +239,159 @@ def archive_knowledge(kid: str):
     finally:
         db.close()
     return _fetch_one(kid)
+
+
+def _structure_details(detail_ids: list[str]) -> dict:
+    """Collapse a list of detail rows into a new summary via Sonnet.
+
+    Returns the saved summary dict plus {cost_usd, details_linked}.
+    """
+    if not detail_ids:
+        raise HTTPException(status_code=400, detail="detail_ids required")
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=400,
+            detail="ANTHROPIC_API_KEY not set. Enable LLM structuring by exporting the key, or refine manually.",
+        )
+
+    db = get_db()
+    try:
+        placeholders = ",".join("?" * len(detail_ids))
+        rows = db.execute(
+            f"SELECT * FROM knowledge WHERE id IN ({placeholders}) AND status = 'detail'",
+            detail_ids,
+        ).fetchall()
+        details = [_row_to_dict(r) for r in rows]
+        if not details:
+            raise HTTPException(status_code=404, detail="No matching detail items")
+
+        existing_rows = db.execute(
+            "SELECT id, title, content, domain FROM knowledge "
+            "WHERE status IN ('summary','standalone') AND archived = 0 "
+            "LIMIT 30"
+        ).fetchall()
+        existing_summary = "\n".join(
+            f"- [{r['id']}] ({r['domain']}) {r['title']}: {(r['content'] or '')[:80]}"
+            for r in existing_rows
+        ) or "(none)"
+
+        detail_text = "\n\n".join(
+            f"[{d['id']}] ({d['type']}) {d['title']}\n{d['content']}"
+            + (f"\nReasoning: {d['reasoning']}" if d.get("reasoning") else "")
+            for d in details
+        )
+
+        prompt = (
+            "You are structuring raw knowledge into a clean, actionable summary.\n\n"
+            "Raw detail items to synthesize:\n"
+            f"{detail_text}\n\n"
+            "Existing knowledge (for relationship discovery — find connections, avoid duplication):\n"
+            f"{existing_summary}\n\n"
+            "Create ONE structured summary that captures the essential knowledge from "
+            "ALL detail items above.\n\n"
+            "Rules:\n"
+            "1. title: Clear imperative, under 50 chars\n"
+            "2. content: Actionable rule/pattern, under 150 words. Self-contained.\n"
+            "3. reasoning: Why this matters, under 80 words\n"
+            "4. tags: 3-7 domain-specific tags\n"
+            "5. domain: Infer from detail items\n"
+            "6. type: domain_rule | architecture_decision | debug_playbook | "
+            "anti_pattern | tool_preference | code_pattern\n"
+            "7. related_ids: From existing knowledge list, items sharing domain context\n"
+            "8. related_reasoning: {id: one-sentence reason} per related item\n"
+            "9. supersedes: id of a standalone item this replaces, or null\n\n"
+            "Return ONLY JSON with keys: title, content, reasoning, type, domain, "
+            "tags, confidence (0-1), related_ids, related_reasoning, supersedes."
+        )
+
+        try:
+            import anthropic
+        except ImportError as e:
+            raise HTTPException(status_code=500, detail=f"anthropic SDK not installed: {e}")
+
+        client = anthropic.Anthropic()
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1000,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = response.content[0].text.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+
+        try:
+            result = json.loads(text)
+        except json.JSONDecodeError as e:
+            raise HTTPException(status_code=500, detail=f"LLM returned invalid JSON: {e}")
+
+        summary_id = f"sum-{hashlib.md5(f'{time.time()}-{detail_ids[0]}'.encode()).hexdigest()[:8]}"
+        confidence = float(result.get("confidence", 0.85))
+        summary = {
+            "id": summary_id,
+            "type": result.get("type", details[0]["type"]),
+            "domain": result.get("domain", details[0]["domain"]),
+            "title": result["title"],
+            "content": result["content"],
+            "reasoning": result.get("reasoning", ""),
+            "confidence": confidence,
+            "source_session_id": f"structured-from-{len(details)}-details",
+            "related_ids": result.get("related_ids", []),
+            "related_reasoning": result.get("related_reasoning", {}),
+            "tags": result.get("tags", []),
+            "approved": 1 if confidence >= 0.9 else 0,
+            "status": "summary",
+            "detail_ids": detail_ids,
+            "parent_id": None,
+        }
+        save_knowledge(db, summary)
+
+        for did in detail_ids:
+            link_detail_to_summary(db, did, summary_id)
+
+        usage = response.usage
+        cost = (usage.input_tokens * 3.0 + usage.output_tokens * 15.0) / 1_000_000
+        log_extraction_cost(
+            db, summary_id, "structure", "sonnet",
+            usage.input_tokens, usage.output_tokens, cost,
+        )
+
+        superseded = result.get("supersedes")
+        if superseded:
+            db.execute(
+                "UPDATE knowledge SET archived = 1, updated_at = ? WHERE id = ?",
+                (datetime.now().isoformat(), superseded),
+            )
+            db.commit()
+
+        saved = _fetch_one(summary_id)
+        saved["cost_usd"] = round(cost, 6)
+        saved["details_linked"] = len(detail_ids)
+        saved["superseded"] = superseded
+        return saved
+    finally:
+        db.close()
+
+
+@app.post("/api/knowledge/structure")
+def structure_details(req: StructureRequest):
+    return _structure_details(req.detail_ids)
+
+
+@app.post("/api/knowledge/{kid}/structure")
+def structure_single(kid: str):
+    return _structure_details([kid])
+
+
+@app.get("/api/knowledge/{kid}/details")
+def list_details(kid: str):
+    _fetch_one(kid)
+    db = get_db()
+    try:
+        return get_details_for(db, kid)
+    finally:
+        db.close()
 
 
 @app.get("/api/grades")

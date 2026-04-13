@@ -111,6 +111,13 @@ const SOURCE_TO_TIER = {
 };
 const tierOf = (it) => SOURCE_TO_TIER[it.source] || "T3";
 
+const STATUS_META = {
+  summary:    { label:"Summary",    icon:"📊", color:"#4ECDC4" },
+  standalone: { label:"Standalone", icon:"📄", color:"#A78BFA" },
+  detail:     { label:"Detail",     icon:"📋", color:"#94A3B8" },
+};
+const statusOf = (it) => it.status || "standalone";
+
 const isNew = (d) => {
   if (!d.created_at) return false;
   return (Date.now() - new Date(d.created_at).getTime()) < 86400000;
@@ -144,6 +151,18 @@ const api = {
     fetch(`/api/knowledge/${encodeURIComponent(id)}/approve`, {method:"POST"}).then(r => r.json()),
   archive: (id) =>
     fetch(`/api/knowledge/${encodeURIComponent(id)}/archive`, {method:"POST"}).then(r => r.json()),
+  structure: (detail_ids) =>
+    fetch(`/api/knowledge/structure`, {
+      method: "POST",
+      headers: {"content-type": "application/json"},
+      body: JSON.stringify({ detail_ids }),
+    }).then(async r => {
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
+      return data;
+    }),
+  details: (id) =>
+    fetch(`/api/knowledge/${encodeURIComponent(id)}/details`).then(r => r.json()),
 };
 
 // ─── Small components ────────────────────────────────────
@@ -489,11 +508,21 @@ function AddModal({ onAdd, onClose }) {
 
 // ─── Knowledge Card ──────────────────────────────────────
 
-function KCard({ item, isExpanded, onToggle, onApprove, onArchive, onDelete, onEdit }) {
+function KCard({
+  item, isExpanded, onToggle, onApprove, onArchive, onDelete, onEdit,
+  onStructure, onRefine, selectable, selected, onToggleSelect,
+  details, // pre-loaded detail rows when this is a summary
+}) {
   const [editing, setEditing] = useState(false);
   const [ec, setEc] = useState(item.content);
   const [er, setEr] = useState(item.reasoning || "");
   const t = TYPES[item.type] || {};
+  const status = statusOf(item);
+  const isDetail = status === "detail";
+  const isSummary = status === "summary";
+  const hashBg = isDetail
+    ? "repeating-linear-gradient(45deg, transparent 0 7px, rgba(148,163,184,0.04) 7px 8px)"
+    : "none";
 
   useEffect(() => {
     setEc(item.content);
@@ -506,20 +535,34 @@ function KCard({ item, isExpanded, onToggle, onApprove, onArchive, onDelete, onE
     <div onClick={() => !editing && onToggle(item.id)}
       style={{
         background: item.approved ? "var(--card)" : "var(--card-pending)",
+        backgroundImage: hashBg,
         border: `1px solid var(--border)`,
         borderLeft: `3px solid ${t.color || "#666"}`,
         borderRadius:8, padding:"12px 14px",
         cursor: editing ? "default" : "pointer", transition:"background 0.15s",
+        opacity: isDetail ? 0.92 : 1,
       }}
       onMouseEnter={e => { if (!editing) e.currentTarget.style.background = "var(--card-hover)"; }}
       onMouseLeave={e => { e.currentTarget.style.background = item.approved ? "var(--card)" : "var(--card-pending)"; }}
     >
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:10 }}>
+        {selectable && isDetail && (
+          <input
+            type="checkbox"
+            checked={!!selected}
+            onClick={e => e.stopPropagation()}
+            onChange={e => onToggleSelect && onToggleSelect(item.id, e.target.checked)}
+            style={{ marginTop:3, accentColor:"var(--accent)", cursor:"pointer" }}
+          />
+        )}
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap", marginBottom:5 }}>
             <TypeBadge type={item.type} />
             <TierBadge tier={tierOf(item)} />
-            {!item.approved && <span style={{ fontSize:10, color:"#D97706", fontWeight:700 }}>PENDING</span>}
+            {isDetail && <Badge bg="#94A3B818" color="#94A3B8" border="#94A3B830">📋 DETAIL</Badge>}
+            {isSummary && (item.detail_ids?.length || 0) > 0 &&
+              <Badge bg="#4ECDC418" color="#4ECDC4" border="#4ECDC430">📎 {item.detail_ids.length}</Badge>}
+            {!item.approved && !isDetail && <span style={{ fontSize:10, color:"#D97706", fontWeight:700 }}>PENDING</span>}
             {isNew(item) && <Badge bg="#10B98120" color="#34D399" border="#10B98130">NEW</Badge>}
             {isModified(item) && !isNew(item) && <Badge bg="#6366F120" color="#818CF8" border="#6366F130">MODIFIED</Badge>}
           </div>
@@ -563,12 +606,28 @@ function KCard({ item, isExpanded, onToggle, onApprove, onArchive, onDelete, onE
                 </div>
               )}
               <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
-                {!item.approved && <button onClick={() => onApprove(item.id)} style={{ padding:"4px 12px", borderRadius:4, border:"none", background:"var(--accent)", color:"#0b0b0b", fontSize:11, fontWeight:600, cursor:"pointer" }}>✓ Approve</button>}
-                <button onClick={() => setEditing(true)} style={{ padding:"4px 12px", borderRadius:4, border:"1px solid var(--border-strong)", background:"transparent", color:"var(--text-mid)", fontSize:11, cursor:"pointer" }}>✎ Edit</button>
+                {isDetail && <button onClick={() => onStructure && onStructure(item.id)} style={{ padding:"4px 12px", borderRadius:4, border:"none", background:"var(--accent)", color:"#0b0b0b", fontSize:11, fontWeight:600, cursor:"pointer" }}>🔄 Structure</button>}
+                {isDetail && <button onClick={() => onRefine && onRefine(item.id)} style={{ padding:"4px 12px", borderRadius:4, border:"1px solid var(--border-strong)", background:"transparent", color:"var(--text-mid)", fontSize:11, cursor:"pointer" }}>✎ Refine manually</button>}
+                {!item.approved && !isDetail && <button onClick={() => onApprove(item.id)} style={{ padding:"4px 12px", borderRadius:4, border:"none", background:"var(--accent)", color:"#0b0b0b", fontSize:11, fontWeight:600, cursor:"pointer" }}>✓ Approve</button>}
+                {!isDetail && <button onClick={() => setEditing(true)} style={{ padding:"4px 12px", borderRadius:4, border:"1px solid var(--border-strong)", background:"transparent", color:"var(--text-mid)", fontSize:11, cursor:"pointer" }}>✎ Edit</button>}
                 <button onClick={() => onArchive(item.id)} style={{ padding:"4px 12px", borderRadius:4, border:"1px solid rgba(217,119,6,0.35)", background:"transparent", color:"#D97706", fontSize:11, cursor:"pointer" }}>📦 Archive</button>
                 <button onClick={() => { if (confirm(`Delete "${item.title}" permanently?`)) onDelete(item.id); }}
                   style={{ padding:"4px 12px", borderRadius:4, border:"1px solid rgba(220,38,38,0.35)", background:"transparent", color:"#DC2626", fontSize:11, cursor:"pointer" }}>🗑 Delete</button>
               </div>
+              {isSummary && details && details.length > 0 && (
+                <div style={{ marginTop:10, paddingLeft:12, borderLeft:"2px solid rgba(255,255,255,0.06)" }}>
+                  <div style={{ fontSize:10, color:"var(--text-dim)", marginBottom:5, textTransform:"uppercase", letterSpacing:"0.06em" }}>
+                    📎 Evidence ({details.length})
+                  </div>
+                  {details.map(d => (
+                    <div key={d.id} style={{ padding:"5px 9px", marginBottom:3, borderRadius:4, background:"rgba(148,163,184,0.06)", fontSize:11, color:"var(--text-mid)" }}>
+                      <span style={{ color:"var(--text-faint)", marginRight:5 }}>└</span>
+                      <span style={{ fontWeight:600, color:"var(--text-main)" }}>{d.title}</span>
+                      {d.content && <div style={{ marginTop:2, marginLeft:12, color:"var(--text-dim)", fontSize:10.5 }}>{d.content.slice(0, 180)}{d.content.length > 180 ? "…" : ""}</div>}
+                    </div>
+                  ))}
+                </div>
+              )}
             </>
           )}
         </div>
@@ -586,6 +645,10 @@ function MojoDashboard() {
   const [selDomain, setSelDomain] = useState(null);
   const [selType, setSelType] = useState(null);
   const [selSource, setSelSource] = useState(null);
+  const [selStatus, setSelStatus] = useState(null);  // summary | standalone | detail | unlinked
+  const [selDetailIds, setSelDetailIds] = useState(() => new Set());
+  const [detailsByParent, setDetailsByParent] = useState({});
+  const [structuring, setStructuring] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
   const [showArchived, setShowArchived] = useState(false);
   const [view, setView] = useState("list");
@@ -620,15 +683,79 @@ function MojoDashboard() {
   const edit    = async (id, c, r) => { await api.update(id, { content:c, reasoning:r }); flash(`✎ Updated: ${id}`); refresh(); };
   const addItem = async (payload) => { const it = await api.create(payload); flash(`✓ Added: ${it.title}`); refresh(); };
 
+  const toggleDetailSelect = (id, checked) => {
+    setSelDetailIds(prev => {
+      const next = new Set(prev);
+      if (checked) next.add(id); else next.delete(id);
+      return next;
+    });
+  };
+
+  const refineDetail = async (id) => {
+    await api.update(id, { status: "standalone", parent_id: null });
+    flash(`✎ Refined to standalone: ${id}`);
+    refresh();
+  };
+
+  const structureDetails = async (ids) => {
+    if (!ids || ids.length === 0) return;
+    setStructuring(true);
+    try {
+      const result = await api.structure(ids);
+      flash(`🔄 Structured ${ids.length} → ${result.id} ($${(result.cost_usd || 0).toFixed(4)})`);
+      setSelDetailIds(new Set());
+      refresh();
+    } catch (err) {
+      flash(`✗ Structure failed: ${err.message}`);
+    } finally {
+      setStructuring(false);
+    }
+  };
+
   const active = items; // backend already respects showArchived
 
-  const filtered = active.filter(i => {
+  const toggleExpand = async (id) => {
+    const next = expandedId === id ? null : id;
+    setExpandedId(next);
+    if (next) {
+      const item = items.find(i => i.id === next);
+      if (item && statusOf(item) === "summary" && !detailsByParent[next]) {
+        try {
+          const rows = await api.details(next);
+          setDetailsByParent(prev => ({ ...prev, [next]: rows }));
+        } catch (_) { /* ignore */ }
+      }
+    }
+  };
+
+  // Linked details (parent_id set) are shown inside the summary card, not at the top level.
+  const baseVisible = active.filter(i => {
+    if (statusOf(i) === "detail" && i.parent_id) return false;
+    return true;
+  });
+
+  const filtered = baseVisible.filter(i => {
     if (search && !`${i.title} ${i.content} ${(i.tags || []).join(" ")}`.toLowerCase().includes(search.toLowerCase())) return false;
     if (selDomain && !i.domain.startsWith(selDomain)) return false;
     if (selType && i.type !== selType) return false;
     if (selSource && tierOf(i) !== selSource) return false;
+    if (selStatus) {
+      const st = statusOf(i);
+      if (selStatus === "unlinked") {
+        if (st !== "detail" || i.parent_id) return false;
+      } else if (st !== selStatus) {
+        return false;
+      }
+    }
     return true;
   });
+
+  const statusCounts = {
+    summary:    active.filter(i => statusOf(i) === "summary").length,
+    standalone: active.filter(i => statusOf(i) === "standalone").length,
+    detail:     active.filter(i => statusOf(i) === "detail").length,
+    unlinked:   active.filter(i => statusOf(i) === "detail" && !i.parent_id).length,
+  };
 
   const tierCounts = { T1: 0, T2: 0, T3: 0 };
   active.forEach(i => { tierCounts[tierOf(i)]++; });
@@ -747,6 +874,27 @@ function MojoDashboard() {
             </div>;
           })}
 
+          <div style={{ padding:"14px 12px 8px", fontSize:9.5, color:"var(--text-faint)", textTransform:"uppercase", letterSpacing:"0.1em", borderTop:"1px solid var(--border)", marginTop:10 }}>View</div>
+          <div onClick={() => setSelStatus(null)}
+            style={{ padding:"4px 12px", cursor:"pointer", fontSize:11.5, color: !selStatus ? "var(--accent)" : "var(--text-mid)", background: !selStatus ? "var(--accent-bg)" : "transparent", borderLeft: !selStatus ? "2px solid var(--accent)" : "2px solid transparent", display:"flex", justifyContent:"space-between" }}>
+            <span>All</span><span style={{ fontSize:10, color:"var(--text-faint)" }}>{active.length}</span>
+          </div>
+          {[
+            ["summary",    "📊 Summaries"],
+            ["standalone", "📄 Standalone"],
+            ["detail",     "📋 Details"],
+            ["unlinked",   "⚠️ Unlinked"],
+          ].map(([k, label]) => {
+            const cnt = statusCounts[k] || 0;
+            const accent = k === "unlinked" ? "#D97706" : STATUS_META[k]?.color || "var(--accent)";
+            return (
+              <div key={k} onClick={() => setSelStatus(selStatus === k ? null : k)}
+                style={{ padding:"4px 12px", cursor:"pointer", fontSize:11.5, color: selStatus === k ? accent : "var(--text-mid)", background: selStatus === k ? `${accent}18` : "transparent", borderLeft: selStatus === k ? `2px solid ${accent}` : "2px solid transparent", display:"flex", justifyContent:"space-between", opacity: cnt === 0 ? 0.4 : 1 }}>
+                <span>{label}</span><span style={{ fontSize:10, color:"var(--text-faint)" }}>{cnt}</span>
+              </div>
+            );
+          })}
+
           <div style={{ padding:"14px 12px 8px", fontSize:9.5, color:"var(--text-faint)", textTransform:"uppercase", letterSpacing:"0.1em", borderTop:"1px solid var(--border)", marginTop:10 }}>Knowledge Tiers</div>
           <div onClick={() => setSelSource(null)}
             style={{ padding:"4px 12px", cursor:"pointer", fontSize:11.5, color: !selSource ? "var(--accent)" : "var(--text-mid)", background: !selSource ? "var(--accent-bg)" : "transparent", borderLeft: !selSource ? "2px solid var(--accent)" : "2px solid transparent", display:"flex", justifyContent:"space-between" }}>
@@ -773,17 +921,39 @@ function MojoDashboard() {
                 style={{ width:"100%", padding:"9px 12px 9px 32px", borderRadius:7, border:"1px solid var(--border-strong)", background:"var(--card)", color:"var(--text-main)", fontSize:12.5, outline:"none", fontFamily:"'JetBrains Mono',monospace" }} />
               <span style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)", color:"var(--text-faint)", fontSize:13 }}>⌕</span>
             </div>
-            {(selDomain || selType || selSource || search) && (
+            {(selDomain || selType || selSource || selStatus || search) && (
               <div style={{ display:"flex", gap:5, marginTop:8, flexWrap:"wrap", alignItems:"center" }}>
                 <span style={{ fontSize:10, color:"var(--text-dim)" }}>Filters:</span>
                 {selDomain && <span onClick={() => setSelDomain(null)} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:"var(--accent-bg)", color:"var(--accent)", cursor:"pointer" }}>{selDomain} ×</span>}
                 {selType && <span onClick={() => setSelType(null)} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:`${TYPES[selType]?.color}18`, color:TYPES[selType]?.color, cursor:"pointer" }}>{TYPES[selType]?.label} ×</span>}
                 {selSource && <span onClick={() => setSelSource(null)} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:`${TIERS[selSource]?.color}18`, color:TIERS[selSource]?.color, cursor:"pointer" }}>{selSource} · {TIERS[selSource]?.label} ×</span>}
+                {selStatus && <span onClick={() => setSelStatus(null)} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:"rgba(217,119,6,0.15)", color:"#D97706", cursor:"pointer" }}>{selStatus} ×</span>}
                 {search && <span onClick={() => setSearch("")} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:"var(--bar-track)", color:"var(--text-mid)", cursor:"pointer" }}>"{search}" ×</span>}
                 <span style={{ fontSize:10, color:"var(--text-faint)" }}>({filtered.length})</span>
               </div>
             )}
           </div>
+
+          {/* Unlinked banner */}
+          {statusCounts.unlinked > 0 && view === "list" && (
+            <div style={{ padding:"10px 20px", borderBottom:"1px solid var(--border)", background:"rgba(217,119,6,0.08)", display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
+              <span style={{ fontSize:12, color:"#D97706" }}>
+                📋 <b>{statusCounts.unlinked}</b> unlinked details — structure individually, or select a few to merge
+              </span>
+              <div style={{ flex:1 }} />
+              {selDetailIds.size > 0 && (
+                <button disabled={structuring}
+                  onClick={() => structureDetails(Array.from(selDetailIds))}
+                  style={{ padding:"5px 12px", borderRadius:5, border:"none", background:"var(--accent)", color:"#0b0b0b", fontSize:11, fontWeight:600, cursor: structuring ? "wait" : "pointer" }}>
+                  {structuring ? "Structuring…" : `🔄 Structure selected (${selDetailIds.size})`}
+                </button>
+              )}
+              <button onClick={() => setSelStatus("unlinked")}
+                style={{ padding:"5px 12px", borderRadius:5, border:"1px solid rgba(217,119,6,0.35)", background:"transparent", color:"#D97706", fontSize:11, cursor:"pointer" }}>
+                Review →
+              </button>
+            </div>
+          )}
 
           {/* Content */}
           <div style={{ flex:1, overflow:"auto", padding: view === "list" ? "14px 20px" : "0" }}>
@@ -801,8 +971,15 @@ function MojoDashboard() {
                       {domainItems.map(item => (
                         <KCard key={item.id} item={item}
                           isExpanded={expandedId === item.id}
-                          onToggle={id => setExpandedId(expandedId === id ? null : id)}
-                          onApprove={approve} onArchive={archive} onDelete={del} onEdit={edit} />
+                          onToggle={toggleExpand}
+                          onApprove={approve} onArchive={archive} onDelete={del} onEdit={edit}
+                          onStructure={id => structureDetails([id])}
+                          onRefine={refineDetail}
+                          selectable={true}
+                          selected={selDetailIds.has(item.id)}
+                          onToggleSelect={toggleDetailSelect}
+                          details={statusOf(item) === "summary" ? detailsByParent[item.id] : null}
+                        />
                       ))}
                     </div>
                   </div>
@@ -816,8 +993,8 @@ function MojoDashboard() {
               </>
             ) : (
               <GraphView
-                items={active}
-                highlightedIds={new Set(filtered.map(i => i.id))}
+                items={active.filter(i => statusOf(i) !== "detail")}
+                highlightedIds={new Set(filtered.filter(i => statusOf(i) !== "detail").map(i => i.id))}
                 onSelectNode={id => { setView("list"); setExpandedId(id); }}
               />
             )}

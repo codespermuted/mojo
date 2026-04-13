@@ -11,7 +11,15 @@ from rich.console import Console
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from db_ops import evidence_based_grade, get_db, get_all_knowledge, get_stats, MOJO_DIR
+from db_ops import (
+    evidence_based_grade,
+    get_db,
+    get_all_knowledge,
+    get_details_for,
+    get_stats,
+    get_summaries,
+    MOJO_DIR,
+)
 from serve.packer import pack_knowledge, estimate_tokens
 
 console = Console()
@@ -58,8 +66,13 @@ def render_claude_md_section(items: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def render_skill_md(domain: str, items: list[dict]) -> str:
-    """Render a SKILL.md file for a domain."""
+def render_skill_md(domain: str, items: list[dict], db=None) -> str:
+    """Render a SKILL.md file for a domain.
+
+    If ``db`` is provided, detail items attached to each summary are
+    appended as an Evidence section (SKILL.md is loaded on-demand so
+    token overhead is acceptable).
+    """
     # Create skill name from domain path
     skill_name = domain.replace("/", "-")
     
@@ -112,6 +125,14 @@ def render_skill_md(domain: str, items: list[dict]) -> str:
             lines.append(item["content"])
             if item.get("reasoning"):
                 lines.append(f"*Why*: {item['reasoning']}")
+            if db is not None and item.get("status") == "summary":
+                details = get_details_for(db, item["id"])[:3]
+                if details:
+                    lines.append("")
+                    lines.append("**Evidence:**")
+                    for d in details:
+                        snippet = (d.get("content") or "").replace("\n", " ")[:120]
+                        lines.append(f"- {d['title']}: {snippet}")
             lines.append("")
 
     return "\n".join(lines)
@@ -122,10 +143,12 @@ def sync_claude_md(project_path: str, token_budget: int = 2000,
                    domain_priorities: dict = None):
     """Sync Mojo knowledge into project's CLAUDE.md."""
     db = get_db()
-    all_knowledge = get_all_knowledge(db, min_confidence=confidence_threshold)
+    # Top-layer only: summary + standalone. Details live one level below
+    # and are injected on-demand through SKILL.md, not CLAUDE.md.
+    all_knowledge = get_summaries(db, min_confidence=confidence_threshold)
     db.close()
 
-    # Exclude F-grade (deprecated) items from CLAUDE.md entirely
+    # Exclude F-grade (contested) items from CLAUDE.md entirely.
     all_knowledge = [k for k in all_knowledge if evidence_based_grade(k) != "F"]
 
     if not all_knowledge:
@@ -173,12 +196,13 @@ def sync_claude_md(project_path: str, token_budget: int = 2000,
 def sync_skills(output_dir: str = None, skill_threshold: int = 10):
     """Generate SKILL.md files for domains with enough knowledge."""
     db = get_db()
-    all_knowledge = get_all_knowledge(db, min_confidence=0.5)
-    db.close()
+    # Top-layer items drive skill generation; details render inside each
+    # skill as an Evidence section via render_skill_md(..., db=db).
+    top_layer = get_summaries(db, min_confidence=0.5)
 
     # Group by top-level domain
     by_domain = defaultdict(list)
-    for item in all_knowledge:
+    for item in top_layer:
         by_domain[item["domain"]].append(item)
 
     # Use default skills directory if not specified
@@ -211,12 +235,14 @@ def sync_skills(output_dir: str = None, skill_threshold: int = 10):
         skill_dir = output_root / skill_name
         skill_dir.mkdir(parents=True, exist_ok=True)
 
-        skill_content = render_skill_md(domain, items)
+        skill_content = render_skill_md(domain, items, db=db)
         skill_path = skill_dir / "SKILL.md"
         skill_path.write_text(skill_content, encoding="utf-8")
 
         console.print(f"[green]✓ Generated skill: {skill_name} ({len(items)} items)[/green]")
         generated += 1
+
+    db.close()
 
     if generated == 0 and removed == 0:
         console.print(

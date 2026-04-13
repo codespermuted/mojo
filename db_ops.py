@@ -104,10 +104,48 @@ def get_db(db_path: Optional[Path] = None) -> sqlite3.Connection:
 
 
 def init_db(db_path: Optional[Path] = None):
-    """Initialize database with schema."""
+    """Initialize database and migrate old schemas in-place."""
     db = get_db(db_path)
     schema_sql = SCHEMA_PATH.read_text()
     db.executescript(schema_sql)
+
+    # Migration: add columns introduced after the initial schema.
+    migrations = [
+        ("related_reasoning", "TEXT DEFAULT '{}'"),
+        ("status",            "TEXT DEFAULT 'standalone'"),
+        ("parent_id",         "TEXT"),
+        ("detail_ids",        "TEXT DEFAULT '[]'"),
+    ]
+    status_added = False
+    for col, ddl in migrations:
+        try:
+            db.execute(f"SELECT {col} FROM knowledge LIMIT 1")
+        except sqlite3.OperationalError:
+            db.execute(f"ALTER TABLE knowledge ADD COLUMN {col} {ddl}")
+            if col == "status":
+                status_added = True
+
+    # Backfill: reclassify git-scan rows as detail the first time the
+    # column exists, OR if no detail rows exist yet at all (recovery from
+    # an earlier migration that incorrectly kept them as standalone).
+    should_backfill = status_added
+    if not should_backfill:
+        any_detail = db.execute(
+            "SELECT 1 FROM knowledge WHERE status = 'detail' LIMIT 1"
+        ).fetchone()
+        any_git = db.execute(
+            "SELECT 1 FROM knowledge WHERE source_session_id LIKE 'git-scan%' LIMIT 1"
+        ).fetchone()
+        if not any_detail and any_git:
+            should_backfill = True
+
+    if should_backfill:
+        db.execute("""
+            UPDATE knowledge
+               SET status = 'detail'
+             WHERE source_session_id LIKE 'git-scan%'
+               AND status = 'standalone'
+        """)
     db.commit()
     db.close()
 
@@ -124,18 +162,26 @@ def register_session(db: sqlite3.Connection, session_id: str,
 
 def save_knowledge(db: sqlite3.Connection, item: dict):
     """Save a knowledge item to the database."""
+    related_reasoning = item.get("related_reasoning", {})
+    if not isinstance(related_reasoning, str):
+        related_reasoning = json.dumps(related_reasoning, ensure_ascii=False)
     db.execute("""
-        INSERT OR REPLACE INTO knowledge 
+        INSERT OR REPLACE INTO knowledge
         (id, type, domain, title, content, reasoning, confidence,
-         source_session_id, related_ids, tags, usage_count, approved, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         source_session_id, related_ids, related_reasoning, tags,
+         usage_count, approved, status, parent_id, detail_ids, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         item["id"], item["type"], item["domain"], item["title"],
         item["content"], item.get("reasoning", ""),
         item.get("confidence", 0.5), item.get("source_session_id", ""),
         json.dumps(item.get("related_ids", []), ensure_ascii=False),
+        related_reasoning,
         json.dumps(item.get("tags", []), ensure_ascii=False),
         item.get("usage_count", 0), item.get("approved", 0),
+        item.get("status", "standalone"),
+        item.get("parent_id"),
+        json.dumps(item.get("detail_ids", []), ensure_ascii=False),
         datetime.now().isoformat()
     ))
     db.commit()
@@ -244,12 +290,77 @@ def get_stats(db: sqlite3.Connection) -> dict:
     }
 
 
-def _row_to_dict(row: sqlite3.Row) -> dict:
+def _row_to_dict(row) -> dict:
     d = dict(row)
-    for field in ("related_ids", "tags"):
+    for field in ("related_ids", "tags", "detail_ids"):
         if field in d and isinstance(d[field], str):
             try:
                 d[field] = json.loads(d[field])
             except (json.JSONDecodeError, TypeError):
                 d[field] = []
+    if "related_reasoning" in d and isinstance(d["related_reasoning"], str):
+        try:
+            d["related_reasoning"] = json.loads(d["related_reasoning"])
+        except (json.JSONDecodeError, TypeError):
+            d["related_reasoning"] = {}
     return d
+
+
+def get_summaries(db: sqlite3.Connection,
+                  min_confidence: float = 0.0,
+                  approved_only: bool = False) -> list[dict]:
+    """Fetch top-layer items (summary + standalone) for CLAUDE.md injection."""
+    query = ("SELECT * FROM knowledge WHERE archived = 0 "
+             "AND status IN ('summary', 'standalone') "
+             "AND confidence >= ?")
+    if approved_only:
+        query += " AND approved = 1"
+    query += " ORDER BY domain, confidence DESC"
+    rows = db.execute(query, (min_confidence,)).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def get_details_for(db: sqlite3.Connection, parent_id: str) -> list[dict]:
+    """Fetch details that belong to a given summary."""
+    rows = db.execute(
+        "SELECT * FROM knowledge WHERE parent_id = ? AND archived = 0 "
+        "ORDER BY created_at",
+        (parent_id,),
+    ).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def get_orphan_details(db: sqlite3.Connection) -> list[dict]:
+    """Fetch detail rows that are not yet linked to any summary."""
+    rows = db.execute(
+        "SELECT * FROM knowledge WHERE status = 'detail' "
+        "AND (parent_id IS NULL OR parent_id = '') AND archived = 0 "
+        "ORDER BY created_at DESC"
+    ).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def link_detail_to_summary(db: sqlite3.Connection,
+                           detail_id: str, summary_id: str):
+    """Attach a detail to a summary, updating both sides of the link."""
+    db.execute(
+        "UPDATE knowledge SET parent_id = ?, updated_at = datetime('now') "
+        "WHERE id = ?",
+        (summary_id, detail_id),
+    )
+    row = db.execute(
+        "SELECT detail_ids FROM knowledge WHERE id = ?", (summary_id,)
+    ).fetchone()
+    if row:
+        try:
+            ids = json.loads(row[0] or "[]")
+        except (json.JSONDecodeError, TypeError):
+            ids = []
+        if detail_id not in ids:
+            ids.append(detail_id)
+            db.execute(
+                "UPDATE knowledge SET detail_ids = ?, updated_at = datetime('now') "
+                "WHERE id = ?",
+                (json.dumps(ids, ensure_ascii=False), summary_id),
+            )
+    db.commit()

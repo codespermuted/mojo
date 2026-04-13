@@ -26,14 +26,20 @@ CREATE TABLE IF NOT EXISTS knowledge (
     reasoning TEXT,
     confidence REAL DEFAULT 0.5 CHECK(confidence >= 0.0 AND confidence <= 1.0),
     source_session_id TEXT,
-    related_ids TEXT DEFAULT '[]',       -- JSON array
-    tags TEXT DEFAULT '[]',              -- JSON array
+    related_ids TEXT DEFAULT '[]',        -- JSON array
+    related_reasoning TEXT DEFAULT '{}',  -- JSON {id: why-related}
+    tags TEXT DEFAULT '[]',               -- JSON array
     usage_count INTEGER DEFAULT 0,
     last_used_at TEXT,
     approved INTEGER DEFAULT 0,
     archived INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'standalone'      -- 'summary' | 'detail' | 'standalone'
+        CHECK(status IN ('summary', 'detail', 'standalone')),
+    parent_id TEXT,                       -- FK to knowledge(id) for detail→summary
+    detail_ids TEXT DEFAULT '[]',         -- JSON array of detail ids (for summary)
     created_at TEXT DEFAULT (datetime('now')),
-    updated_at TEXT DEFAULT (datetime('now'))
+    updated_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (parent_id) REFERENCES knowledge(id)
 );
 
 CREATE TABLE IF NOT EXISTS injections (

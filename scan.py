@@ -324,6 +324,9 @@ def scan_and_save(repo_path: str, max_commits: int = 200,
             "domain": domain,
             "title": cand["commit_subject"][:50],
             "content": content[:500],
+            "status": "detail",
+            "parent_id": None,
+            "detail_ids": [],
             "reasoning": (
                 f"Auto-extracted from git {cand['type']} commit {cand['commit_hash']} "
                 f"({cand['commit_date'][:10]}). "

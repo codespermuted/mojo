@@ -66,6 +66,9 @@ def import_seed(seed_path: str, force: bool = False):
         item.setdefault("related_ids", [])
         item.setdefault("tags", [])
         item.setdefault("reasoning", "")
+        item.setdefault("status", "standalone")
+        item.setdefault("parent_id", None)
+        item.setdefault("detail_ids", [])
 
         save_knowledge(db, item)
         imported += 1
