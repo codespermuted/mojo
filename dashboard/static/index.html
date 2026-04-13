@@ -1,0 +1,742 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Mojo Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://unpkg.com/d3@7/dist/d3.min.js"></script>
+<style>
+  :root {
+    --bg: #0C0C0E;
+    --card: rgba(255,255,255,0.025);
+    --card-hover: rgba(255,255,255,0.05);
+    --card-pending: rgba(255,180,50,0.035);
+    --border: rgba(255,255,255,0.05);
+    --border-strong: rgba(255,255,255,0.1);
+    --text-main: rgba(255,255,255,0.9);
+    --text-mid: rgba(255,255,255,0.5);
+    --text-dim: rgba(255,255,255,0.3);
+    --text-faint: rgba(255,255,255,0.18);
+    --input-bg: rgba(0,0,0,0.3);
+    --accent: #4ECDC4;
+    --accent-bg: rgba(78,205,196,0.12);
+    --bar-track: rgba(255,255,255,0.07);
+    --graph-bg: rgba(0,0,0,0.2);
+  }
+  [data-theme="light"] {
+    --bg: #F5F5F0;
+    --card: #FFFFFF;
+    --card-hover: #EFEFE8;
+    --card-pending: #FFF8E6;
+    --border: #E0E0DA;
+    --border-strong: #C8C8C0;
+    --text-main: #1A1A1A;
+    --text-mid: #4A4A4A;
+    --text-dim: #6B6B6B;
+    --text-faint: #9A9A96;
+    --input-bg: #FAFAF5;
+    --accent: #2BA89E;
+    --accent-bg: rgba(43,168,158,0.14);
+    --bar-track: #E0E0DA;
+    --graph-bg: #EFEFE8;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin:0; padding:0; background: var(--bg); color: var(--text-main); font-family:'Söhne','Helvetica Neue',sans-serif; }
+  @keyframes toastIn { from{opacity:0;transform:translateX(-50%) translateY(16px)} to{opacity:1;transform:translateX(-50%) translateY(0)} }
+  ::-webkit-scrollbar{width:6px} ::-webkit-scrollbar-track{background:transparent} ::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:3px}
+  button { font-family: inherit; }
+  input, textarea, select { font-family: inherit; color: var(--text-main); }
+  #root { min-height: 100vh; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="env,react">
+const { useState, useEffect, useCallback, useRef, useMemo } = React;
+
+const TYPES = {
+  domain_rule:            { icon:"📏",  label:"Rule",         color:"#4ECDC4" },
+  architecture_decision:  { icon:"🏗️", label:"Architecture", color:"#FFB347" },
+  debug_playbook:         { icon:"🔧",  label:"Debug",        color:"#87CEEB" },
+  anti_pattern:           { icon:"⚠️",  label:"Anti-Pattern", color:"#FF6B6B" },
+  tool_preference:        { icon:"🔨",  label:"Tool Pref",    color:"#DDA0DD" },
+  code_pattern:           { icon:"📝",  label:"Code Pattern", color:"#98D8C8" },
+};
+
+// Mirrors db_ops.CONFIDENCE_GRADES. Backend sends the resolved letter in `grade`.
+const GRADES = {
+  A: { label:"Verified",     color:"#4ECDC4", desc:"Multi-source confirmed or usage-validated" },
+  B: { label:"Corroborated", color:"#87CEEB", desc:"Single source with reasoning, approved" },
+  C: { label:"Reported",     color:"#FFB347", desc:"Auto-extracted, single source, unverified" },
+  D: { label:"Inferred",     color:"#DDA0DD", desc:"Weak signal, ambiguous context" },
+  F: { label:"Contested",    color:"#FF6B6B", desc:"Contradicted or long-unused" },
+};
+const GRADE_ORDER = ["A","B","C","D","F"];
+const gradeOf = (it) => it.grade || "C";
+
+const deriveSource = (it) => {
+  const s = it.source_session_id || "";
+  if (s === "memory-seed") return "memory-seed";
+  if (s.startsWith("git-scan") || s.startsWith("git-")) return "git-scan";
+  if (s.startsWith("manual")) return "manual";
+  return "llm-extract";
+};
+
+const isNew = (d) => {
+  if (!d.created_at) return false;
+  return (Date.now() - new Date(d.created_at).getTime()) < 86400000;
+};
+const isModified = (d) => {
+  if (!d.updated_at || !d.created_at) return false;
+  if (d.created_at === d.updated_at) return false;
+  return (Date.now() - new Date(d.updated_at).getTime()) < 86400000 * 3;
+};
+
+// ─── API ─────────────────────────────────────────────────
+
+const api = {
+  list: (includeArchived) =>
+    fetch(`/api/knowledge${includeArchived ? "?include_archived=true" : ""}`).then(r => r.json()),
+  create: (item) =>
+    fetch("/api/knowledge", {
+      method: "POST",
+      headers: {"content-type": "application/json"},
+      body: JSON.stringify(item),
+    }).then(r => r.json()),
+  update: (id, patch) =>
+    fetch(`/api/knowledge/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      headers: {"content-type": "application/json"},
+      body: JSON.stringify(patch),
+    }).then(r => r.json()),
+  del: (id) =>
+    fetch(`/api/knowledge/${encodeURIComponent(id)}`, {method:"DELETE"}).then(r => r.json()),
+  approve: (id) =>
+    fetch(`/api/knowledge/${encodeURIComponent(id)}/approve`, {method:"POST"}).then(r => r.json()),
+  archive: (id) =>
+    fetch(`/api/knowledge/${encodeURIComponent(id)}/archive`, {method:"POST"}).then(r => r.json()),
+};
+
+// ─── Small components ────────────────────────────────────
+
+const GradePill = ({ grade, compact }) => {
+  const g = GRADES[grade] || GRADES.F;
+  const barWidth = compact ? 28 : 44;
+  // bar fill proportional to the grade letter's position (A=full, F=minimal)
+  const fillRatio = { A: 1, B: 0.78, C: 0.58, D: 0.38, F: 0.18 }[grade] || 0.18;
+  return (
+    <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+      <span style={{
+        fontSize:11, fontWeight:700, fontFamily:"'Outfit',sans-serif",
+        padding:"1px 6px", borderRadius:3,
+        background:`${g.color}20`, color:g.color, border:`1px solid ${g.color}40`,
+        letterSpacing:"0.04em",
+      }}>
+        {grade}
+      </span>
+      {!compact && (
+        <span style={{ fontSize:10, color:"var(--text-dim)", letterSpacing:"0.03em" }}>
+          {g.label}
+        </span>
+      )}
+      <div style={{ width:barWidth, height:4, borderRadius:2, background:"var(--bar-track)" }}>
+        <div style={{ width:`${fillRatio*100}%`, height:"100%", borderRadius:2, background:g.color }} />
+      </div>
+    </div>
+  );
+};
+
+const Badge = ({ bg, color, border, children }) => (
+  <span style={{ fontSize:10, padding:"1px 6px", borderRadius:3, fontWeight:600, background:bg, color, border:`1px solid ${border}`, letterSpacing:"0.04em" }}>{children}</span>
+);
+
+const TypeBadge = ({ type }) => {
+  const t = TYPES[type] || { icon:"📄", label:type, color:"#999" };
+  return <Badge bg={`${t.color}15`} color={t.color} border={`${t.color}30`}>{t.icon} {t.label}</Badge>;
+};
+
+const SrcBadge = ({ s }) => {
+  const c = {
+    "memory-seed": { l:"SEED", bg:"#6C5CE718", c:"#A78BFA", b:"#6C5CE730" },
+    "llm-extract": { l:"LLM",  bg:"#10B98118", c:"#34D399", b:"#10B98130" },
+    "git-scan":    { l:"GIT",  bg:"#F5920018", c:"#FBBF24", b:"#F5920030" },
+    "manual":      { l:"MAN",  bg:"#64748B18", c:"#94A3B8", b:"#64748B30" },
+  }[s] || { l:"?", bg:"#ffffff08", c:"#999", b:"#ffffff15" };
+  return <Badge bg={c.bg} color={c.c} border={c.b}>{c.l}</Badge>;
+};
+
+// ─── Graph View ──────────────────────────────────────────
+
+function GraphView({ items, highlightedIds, onSelectNode }) {
+  const svgRef = useRef(null);
+  const hasFilter = highlightedIds && highlightedIds.size !== items.length;
+
+  const { nodes, links } = useMemo(() => {
+    const ns = items.map(it => ({ ...it, x:0, y:0 }));
+    const idSet = new Set(items.map(i => i.id));
+    const ls = [];
+    const seen = new Set();
+
+    items.forEach(it => {
+      (it.related_ids || []).forEach(rid => {
+        if (idSet.has(rid)) {
+          const key = [it.id, rid].sort().join("-");
+          if (!seen.has(key)) { seen.add(key); ls.push({ source:it.id, target:rid, type:"explicit" }); }
+        }
+      });
+    });
+
+    for (let i = 0; i < items.length; i++) {
+      for (let j = i + 1; j < items.length; j++) {
+        const shared = (items[i].tags || []).filter(t => (items[j].tags || []).includes(t));
+        if (shared.length >= 2) {
+          const key = [items[i].id, items[j].id].sort().join("-");
+          if (!seen.has(key)) { seen.add(key); ls.push({ source:items[i].id, target:items[j].id, type:"implicit", shared }); }
+        }
+      }
+    }
+    return { nodes: ns, links: ls };
+  }, [items]);
+
+  useEffect(() => {
+    if (!svgRef.current || nodes.length === 0) return;
+    const svg = d3.select(svgRef.current);
+    const W = svgRef.current.clientWidth || 700;
+    const H = svgRef.current.clientHeight || 500;
+    svg.selectAll("*").remove();
+
+    const g = svg.append("g");
+    const zoom = d3.zoom().scaleExtent([0.3, 3]).on("zoom", (e) => g.attr("transform", e.transform));
+    svg.call(zoom);
+
+    const sim = d3.forceSimulation(nodes)
+      .force("link", d3.forceLink(links).id(d => d.id)
+        .distance(d => d.type === "explicit" ? 80 : 130)
+        .strength(d => d.type === "explicit" ? 0.6 : 0.15))
+      .force("charge", d3.forceManyBody().strength(-250))
+      .force("center", d3.forceCenter(W/2, H/2))
+      .force("collision", d3.forceCollide().radius(28));
+
+    const labelColor = getComputedStyle(document.documentElement).getPropertyValue("--text-mid").trim() || "rgba(0,0,0,0.55)";
+
+    const link = g.append("g").selectAll("line").data(links).join("line")
+      .attr("stroke", d => d.type === "explicit" ? "rgba(78,205,196,0.45)" : "rgba(128,128,128,0.25)")
+      .attr("stroke-width", d => d.type === "explicit" ? 1.5 : 0.8)
+      .attr("stroke-dasharray", d => d.type === "implicit" ? "3,3" : "none");
+
+    const node = g.append("g").selectAll("g").data(nodes).join("g")
+      .style("cursor", "pointer")
+      .call(d3.drag()
+        .on("start", (e, d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+        .on("drag",  (e, d) => { d.fx = e.x; d.fy = e.y; })
+        .on("end",   (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }));
+
+    const dimOpacity = 0.08;
+    const isDimmed = d => hasFilter && highlightedIds && !highlightedIds.has(d.id);
+
+    node.style("opacity", d => isDimmed(d) ? dimOpacity : 1);
+    link.style("opacity", l => {
+      if (!hasFilter) return 1;
+      const sid = typeof l.source === "object" ? l.source.id : l.source;
+      const tid = typeof l.target === "object" ? l.target.id : l.target;
+      return (highlightedIds.has(sid) && highlightedIds.has(tid)) ? 1 : dimOpacity;
+    });
+
+    node.append("circle")
+      .attr("r", d => 8 + Math.min((d.usage_count || 0) * 2, 10))
+      .attr("fill", d => (GRADES[gradeOf(d)]?.color || "#999") + "30")
+      .attr("stroke", d => GRADES[gradeOf(d)]?.color || "#999")
+      .attr("stroke-width", d => d.approved ? 2 : 1)
+      .attr("stroke-dasharray", d => d.approved ? "none" : "3,2");
+
+    node.append("text")
+      .text(d => TYPES[d.type]?.icon || "📄")
+      .attr("text-anchor", "middle").attr("dy", "0.35em")
+      .style("font-size", "12px").style("pointer-events", "none");
+
+    node.append("text")
+      .text(d => (d.title || "").length > 20 ? d.title.slice(0, 18) + "…" : (d.title || ""))
+      .attr("dy", d => 8 + Math.min((d.usage_count || 0) * 2, 10) + 14)
+      .attr("text-anchor", "middle")
+      .style("font-size", "10px").style("fill", labelColor)
+      .style("font-family", "'Outfit', sans-serif").style("pointer-events", "none");
+
+    node.filter(d => d.type === "anti_pattern").append("circle")
+      .attr("r", d => 12 + Math.min((d.usage_count || 0) * 2, 10))
+      .attr("fill", "none").attr("stroke", "#FF6B6B30").attr("stroke-width", 3);
+
+    node.on("click", (e, d) => { e.stopPropagation(); onSelectNode(d.id); });
+
+    node.on("mouseenter", function (e, d) {
+      const connected = new Set();
+      links.forEach(l => {
+        const sid = typeof l.source === "object" ? l.source.id : l.source;
+        const tid = typeof l.target === "object" ? l.target.id : l.target;
+        if (sid === d.id) connected.add(tid);
+        if (tid === d.id) connected.add(sid);
+      });
+      node.style("opacity", n => n.id === d.id || connected.has(n.id) ? 1 : 0.15);
+      link.style("opacity", l => {
+        const sid = typeof l.source === "object" ? l.source.id : l.source;
+        const tid = typeof l.target === "object" ? l.target.id : l.target;
+        return sid === d.id || tid === d.id ? 1 : 0.05;
+      });
+    }).on("mouseleave", () => { node.style("opacity", 1); link.style("opacity", 1); });
+
+    let fitted = false;
+    const fit = () => {
+      if (fitted) return;
+      fitted = true;
+      try {
+        const bbox = g.node().getBBox();
+        if (!bbox.width || !bbox.height) return;
+        const scale = 0.85 / Math.max(bbox.width / W, bbox.height / H);
+        const tx = W / 2 - scale * (bbox.x + bbox.width / 2);
+        const ty = H / 2 - scale * (bbox.y + bbox.height / 2);
+        svg.transition().duration(750).call(
+          zoom.transform,
+          d3.zoomIdentity.translate(tx, ty).scale(scale)
+        );
+      } catch (_) { /* ignore if bbox not ready */ }
+    };
+
+    sim.on("tick", () => {
+      link.attr("x1", d => d.source.x).attr("y1", d => d.source.y)
+          .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
+      node.attr("transform", d => `translate(${d.x},${d.y})`);
+      if (!fitted && sim.alpha() < 0.1) fit();
+    });
+    sim.on("end", fit);
+
+    return () => sim.stop();
+  }, [nodes, links, hasFilter, highlightedIds]);
+
+  return (
+    <div style={{ width:"100%", height:"100%", position:"relative" }}>
+      <svg ref={svgRef} style={{ width:"100%", height:"100%", background:"var(--graph-bg)", borderRadius:8 }} />
+      <div style={{ position:"absolute", bottom:12, left:12, display:"flex", gap:12, fontSize:10, color:"var(--text-dim)" }}>
+        <span><span style={{ display:"inline-block", width:20, height:2, background:"rgba(78,205,196,0.5)", verticalAlign:"middle", marginRight:4 }}/>related</span>
+        <span><span style={{ display:"inline-block", width:20, height:0, borderTop:"2px dashed var(--border-strong)", verticalAlign:"middle", marginRight:4 }}/>shared tags</span>
+        <span style={{ color:"var(--text-faint)" }}>drag nodes · scroll to zoom · hover to highlight</span>
+      </div>
+    </div>
+  );
+}
+
+// ─── Add Modal ───────────────────────────────────────────
+
+function AddModal({ onAdd, onClose }) {
+  const [form, setForm] = useState({
+    title:"", content:"", reasoning:"",
+    type:"domain_rule", domain:"", tags:"", confidence:0.85,
+  });
+  const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
+  const valid = form.title && form.content && form.domain;
+
+  const submit = () => {
+    if (!valid) return;
+    onAdd({
+      type: form.type,
+      domain: form.domain,
+      title: form.title,
+      content: form.content,
+      reasoning: form.reasoning,
+      confidence: form.confidence,
+      approved: 1,
+      source_session_id: "manual",
+      tags: form.tags.split(",").map(t => t.trim()).filter(Boolean),
+      related_ids: [],
+    });
+    onClose();
+  };
+
+  const inputStyle = {
+    width:"100%", padding:"8px 10px", borderRadius:6,
+    border:"1px solid var(--border-strong)", background:"var(--input-bg)",
+    color:"var(--text-main)", fontSize:13,
+    fontFamily:"'JetBrains Mono', monospace", outline:"none", boxSizing:"border-box",
+  };
+  const labelStyle = { fontSize:11, color:"var(--text-dim)", marginBottom:4, display:"block" };
+
+  return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.6)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:100 }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ background:"var(--card)", backdropFilter:"blur(4px)", borderRadius:12, padding:28, width:520, maxHeight:"85vh", overflowY:"auto", border:"1px solid var(--border-strong)", boxShadow:"0 24px 80px rgba(0,0,0,0.4)", color:"var(--text-main)" }}>
+        <h2 style={{ margin:"0 0 20px", fontSize:18, fontFamily:"'Outfit',sans-serif", fontWeight:600 }}>🔮 Add Knowledge</h2>
+        <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+            <div>
+              <label style={labelStyle}>Domain *</label>
+              <input value={form.domain} onChange={e => set("domain", e.target.value)} placeholder="electricity/smp" style={inputStyle} />
+            </div>
+            <div>
+              <label style={labelStyle}>Type</label>
+              <select value={form.type} onChange={e => set("type", e.target.value)} style={{ ...inputStyle, cursor:"pointer" }}>
+                {Object.entries(TYPES).map(([k, v]) => <option key={k} value={k}>{v.icon} {v.label}</option>)}
+              </select>
+            </div>
+          </div>
+          <div>
+            <label style={labelStyle}>Title *</label>
+            <input value={form.title} onChange={e => set("title", e.target.value)} placeholder="간결한 규칙 제목" style={inputStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>Content *</label>
+            <textarea value={form.content} onChange={e => set("content", e.target.value)} rows={3} placeholder="실행 가능한 규칙/패턴" style={{ ...inputStyle, resize:"vertical" }} />
+          </div>
+          <div>
+            <label style={labelStyle}>Reasoning</label>
+            <textarea value={form.reasoning} onChange={e => set("reasoning", e.target.value)} rows={2} placeholder="왜 이 규칙이 필요한지" style={{ ...inputStyle, resize:"vertical" }} />
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+            <div>
+              <label style={labelStyle}>Tags (comma separated)</label>
+              <input value={form.tags} onChange={e => set("tags", e.target.value)} placeholder="api, database" style={inputStyle} />
+            </div>
+            <div>
+              <label style={labelStyle}>Confidence ({(form.confidence*100)|0}%)</label>
+              <input type="range" min="0.3" max="1" step="0.05" value={form.confidence} onChange={e => set("confidence", +e.target.value)} style={{ width:"100%", accentColor:"var(--accent)", marginTop:8 }} />
+            </div>
+          </div>
+          <div style={{ display:"flex", gap:8, marginTop:4 }}>
+            <button onClick={submit} disabled={!valid} style={{ padding:"8px 24px", borderRadius:6, border:"none", background: valid ? "var(--accent)" : "var(--border-strong)", color: valid ? "#0b0b0b" : "var(--text-faint)", fontSize:13, fontWeight:600, cursor: valid ? "pointer" : "not-allowed" }}>Add Knowledge</button>
+            <button onClick={onClose} style={{ padding:"8px 20px", borderRadius:6, border:"1px solid var(--border-strong)", background:"transparent", color:"var(--text-mid)", fontSize:13, cursor:"pointer" }}>Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Knowledge Card ──────────────────────────────────────
+
+function KCard({ item, isExpanded, onToggle, onApprove, onArchive, onDelete, onEdit }) {
+  const [editing, setEditing] = useState(false);
+  const [ec, setEc] = useState(item.content);
+  const [er, setEr] = useState(item.reasoning || "");
+  const t = TYPES[item.type] || {};
+
+  useEffect(() => {
+    setEc(item.content);
+    setEr(item.reasoning || "");
+  }, [item.content, item.reasoning]);
+
+  const save = () => { onEdit(item.id, ec, er); setEditing(false); };
+
+  return (
+    <div onClick={() => !editing && onToggle(item.id)}
+      style={{
+        background: item.approved ? "var(--card)" : "var(--card-pending)",
+        border: `1px solid var(--border)`,
+        borderLeft: `3px solid ${t.color || "#666"}`,
+        borderRadius:8, padding:"12px 14px",
+        cursor: editing ? "default" : "pointer", transition:"background 0.15s",
+      }}
+      onMouseEnter={e => { if (!editing) e.currentTarget.style.background = "var(--card-hover)"; }}
+      onMouseLeave={e => { e.currentTarget.style.background = item.approved ? "var(--card)" : "var(--card-pending)"; }}
+    >
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:10 }}>
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap", marginBottom:5 }}>
+            <TypeBadge type={item.type} />
+            <SrcBadge s={item.source} />
+            {!item.approved && <span style={{ fontSize:10, color:"#D97706", fontWeight:700 }}>PENDING</span>}
+            {isNew(item) && <Badge bg="#10B98120" color="#34D399" border="#10B98130">NEW</Badge>}
+            {isModified(item) && !isNew(item) && <Badge bg="#6366F120" color="#818CF8" border="#6366F130">MODIFIED</Badge>}
+          </div>
+          <h3 style={{ margin:0, fontSize:13.5, fontWeight:600, color:"var(--text-main)", lineHeight:1.35 }}>{item.title}</h3>
+        </div>
+        <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:3, flexShrink:0 }}>
+          <GradePill grade={gradeOf(item)} />
+          {item.usage_count > 0 && <span style={{ fontSize:10, color:"var(--text-dim)" }}>used {item.usage_count}×</span>}
+        </div>
+      </div>
+
+      {isExpanded && (
+        <div style={{ marginTop:10 }} onClick={e => e.stopPropagation()}>
+          {editing ? (
+            <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+              <textarea value={ec} onChange={e => setEc(e.target.value)} rows={3}
+                style={{ width:"100%", background:"var(--input-bg)", border:"1px solid var(--border-strong)", borderRadius:6, padding:8, color:"var(--text-main)", fontSize:12.5, fontFamily:"'JetBrains Mono',monospace", resize:"vertical", outline:"none", boxSizing:"border-box" }} />
+              <textarea value={er} onChange={e => setEr(e.target.value)} rows={2} placeholder="Reasoning..."
+                style={{ width:"100%", background:"var(--input-bg)", border:"1px solid var(--border-strong)", borderRadius:6, padding:8, color:"var(--text-mid)", fontSize:11.5, fontFamily:"'JetBrains Mono',monospace", fontStyle:"italic", resize:"vertical", outline:"none", boxSizing:"border-box" }} />
+              <div style={{ display:"flex", gap:6 }}>
+                <button onClick={save} style={{ padding:"5px 14px", borderRadius:5, border:"none", background:"var(--accent)", color:"#0b0b0b", fontSize:11, fontWeight:600, cursor:"pointer" }}>Save</button>
+                <button onClick={() => { setEditing(false); setEc(item.content); setEr(item.reasoning || ""); }}
+                  style={{ padding:"5px 14px", borderRadius:5, border:"1px solid var(--border-strong)", background:"transparent", color:"var(--text-mid)", fontSize:11, cursor:"pointer" }}>Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <p style={{ margin:"0 0 6px", fontSize:12.5, color:"var(--text-main)", lineHeight:1.55, fontFamily:"'JetBrains Mono',monospace", whiteSpace:"pre-wrap" }}>{item.content}</p>
+              {item.reasoning && <p style={{ margin:"0 0 8px", fontSize:11.5, color:"var(--text-mid)", lineHeight:1.45, fontStyle:"italic", borderLeft:"2px solid var(--border-strong)", paddingLeft:9 }}>{item.reasoning}</p>}
+              <div style={{ display:"flex", flexWrap:"wrap", gap:3, marginBottom:8 }}>
+                {(item.tags || []).map(tag => <span key={tag} style={{ fontSize:9.5, padding:"1px 5px", borderRadius:3, background:"var(--bar-track)", color:"var(--text-mid)" }}>#{tag}</span>)}
+              </div>
+              {item.lineage && (
+                <div style={{ fontSize:10, color:"var(--text-faint)", marginBottom:4 }}>
+                  📍 Origin: {item.lineage.detail}
+                </div>
+              )}
+              {item.related_ids?.length > 0 && (
+                <div style={{ fontSize:10, color:"var(--text-faint)", marginBottom:8 }}>
+                  🔗 related: {item.related_ids.join(", ")}
+                </div>
+              )}
+              <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
+                {!item.approved && <button onClick={() => onApprove(item.id)} style={{ padding:"4px 12px", borderRadius:4, border:"none", background:"var(--accent)", color:"#0b0b0b", fontSize:11, fontWeight:600, cursor:"pointer" }}>✓ Approve</button>}
+                <button onClick={() => setEditing(true)} style={{ padding:"4px 12px", borderRadius:4, border:"1px solid var(--border-strong)", background:"transparent", color:"var(--text-mid)", fontSize:11, cursor:"pointer" }}>✎ Edit</button>
+                <button onClick={() => onArchive(item.id)} style={{ padding:"4px 12px", borderRadius:4, border:"1px solid rgba(217,119,6,0.35)", background:"transparent", color:"#D97706", fontSize:11, cursor:"pointer" }}>📦 Archive</button>
+                <button onClick={() => { if (confirm(`Delete "${item.title}" permanently?`)) onDelete(item.id); }}
+                  style={{ padding:"4px 12px", borderRadius:4, border:"1px solid rgba(220,38,38,0.35)", background:"transparent", color:"#DC2626", fontSize:11, cursor:"pointer" }}>🗑 Delete</button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Main Dashboard ──────────────────────────────────────
+
+function MojoDashboard() {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [selDomain, setSelDomain] = useState(null);
+  const [selType, setSelType] = useState(null);
+  const [expandedId, setExpandedId] = useState(null);
+  const [showArchived, setShowArchived] = useState(false);
+  const [view, setView] = useState("list");
+  const [showAdd, setShowAdd] = useState(false);
+  const [toast, setToast] = useState(null);
+  const [theme, setTheme] = useState(() => localStorage.getItem("mojo-theme") || "dark");
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem("mojo-theme", theme);
+  }, [theme]);
+
+  const flash = useCallback((m) => { setToast(m); setTimeout(() => setToast(null), 2200); }, []);
+
+  const refresh = useCallback(async () => {
+    try {
+      const list = await api.list(showArchived);
+      const enriched = list.map(it => ({ ...it, source: deriveSource(it) }));
+      setItems(enriched);
+      setLoading(false);
+    } catch (err) {
+      flash(`✗ Load failed: ${err.message}`);
+      setLoading(false);
+    }
+  }, [showArchived, flash]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const approve = async (id) => { await api.approve(id); flash(`✓ Approved: ${id}`); refresh(); };
+  const archive = async (id) => { await api.archive(id); flash(`📦 Archived: ${id}`); refresh(); };
+  const del     = async (id) => { await api.del(id); flash(`🗑 Deleted: ${id}`); refresh(); };
+  const edit    = async (id, c, r) => { await api.update(id, { content:c, reasoning:r }); flash(`✎ Updated: ${id}`); refresh(); };
+  const addItem = async (payload) => { const it = await api.create(payload); flash(`✓ Added: ${it.title}`); refresh(); };
+
+  const active = items; // backend already respects showArchived
+
+  const filtered = active.filter(i => {
+    if (search && !`${i.title} ${i.content} ${(i.tags || []).join(" ")}`.toLowerCase().includes(search.toLowerCase())) return false;
+    if (selDomain && !i.domain.startsWith(selDomain)) return false;
+    if (selType && i.type !== selType) return false;
+    return true;
+  });
+
+  const domainTree = {};
+  active.forEach(i => {
+    const top = i.domain.split("/").slice(0, 2).join("/");
+    if (!domainTree[top]) domainTree[top] = { count:0, subs:{} };
+    domainTree[top].count++;
+    if (i.domain !== top) {
+      domainTree[top].subs[i.domain] = (domainTree[top].subs[i.domain] || 0) + 1;
+    }
+  });
+
+  const grouped = {};
+  filtered.forEach(i => {
+    const top = i.domain.split("/").slice(0, 2).join("/");
+    if (!grouped[top]) grouped[top] = [];
+    grouped[top].push(i);
+  });
+
+  const pending = active.filter(i => !i.approved).length;
+  const avgConf = active.length ? active.reduce((s, i) => s + i.confidence, 0) / active.length : 0;
+  const srcCount = { seed:0, llm:0, git:0, manual:0 };
+  active.forEach(i => {
+    if (i.source === "memory-seed") srcCount.seed++;
+    else if (i.source === "llm-extract") srcCount.llm++;
+    else if (i.source === "git-scan") srcCount.git++;
+    else srcCount.manual++;
+  });
+
+  return (
+    <div style={{ minHeight:"100vh", background:"var(--bg)", color:"var(--text-main)" }}>
+      {/* Header */}
+      <div style={{ padding:"20px 24px 16px", borderBottom:"1px solid var(--border)" }}>
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+            <span style={{ fontSize:26 }}>🔮</span>
+            <div>
+              <h1 style={{ margin:0, fontSize:20, fontWeight:700, fontFamily:"'Outfit',sans-serif", letterSpacing:"-0.02em" }}>Mojo</h1>
+              <p style={{ margin:0, fontSize:10.5, color:"var(--text-dim)", letterSpacing:"0.06em", textTransform:"uppercase" }}>Knowledge Dashboard</p>
+            </div>
+          </div>
+          <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+            <div style={{ display:"flex", borderRadius:6, overflow:"hidden", border:"1px solid var(--border-strong)" }}>
+              {[["list","☰"], ["graph","◉"]].map(([v, icon]) => (
+                <button key={v} onClick={() => setView(v)}
+                  style={{ padding:"5px 14px", border:"none", background: view === v ? "var(--accent-bg)" : "transparent", color: view === v ? "var(--accent)" : "var(--text-mid)", fontSize:13, cursor:"pointer", display:"flex", alignItems:"center", gap:4 }}>
+                  {icon} <span style={{ fontSize:11 }}>{v}</span>
+                </button>
+              ))}
+            </div>
+            <button onClick={() => setShowAdd(true)} style={{ padding:"6px 16px", borderRadius:6, border:"none", background:"var(--accent)", color:"#0b0b0b", fontSize:12, fontWeight:600, cursor:"pointer" }}>+ Add</button>
+            <button onClick={() => setTheme(theme === "dark" ? "light" : "dark")} title="Toggle theme"
+              style={{ padding:"6px 10px", borderRadius:6, border:"1px solid var(--border-strong)", background:"transparent", color:"var(--text-main)", fontSize:14, cursor:"pointer" }}>
+              {theme === "dark" ? "☀️" : "🌙"}
+            </button>
+            <label style={{ display:"flex", alignItems:"center", gap:5, fontSize:10.5, color:"var(--text-dim)", cursor:"pointer" }}>
+              <input type="checkbox" checked={showArchived} onChange={e => setShowArchived(e.target.checked)} style={{ accentColor:"var(--accent)" }} /> archived
+            </label>
+          </div>
+        </div>
+
+        {/* Stats */}
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(5,1fr)", gap:10, marginTop:16 }}>
+          {[
+            { l:"Total",      v:active.length,                                        s:"items" },
+            { l:"Approved",   v:active.length - pending,                              s:`${pending} pending`, c: pending > 0 ? "#D97706" : "var(--accent)" },
+            { l:"Confidence", v:`${(avgConf*100) | 0}%`,                              s:"average" },
+            { l:"Reuses",     v:active.reduce((s, i) => s + (i.usage_count || 0), 0), s:"total" },
+            { l:"Sources",    v:`${srcCount.seed}·${srcCount.llm}·${srcCount.git}${srcCount.manual ? `·${srcCount.manual}` : ""}`, s:"seed·llm·git"+(srcCount.manual?"·man":""), fs:13 },
+          ].map((st, i) => (
+            <div key={i} style={{ background:"var(--card)", borderRadius:7, padding:"10px 12px", border:"1px solid var(--border)" }}>
+              <div style={{ fontSize:9.5, color:"var(--text-dim)", textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:3 }}>{st.l}</div>
+              <div style={{ fontSize: st.fs || 18, fontWeight:700, fontFamily:"'Outfit',sans-serif", color: st.c || "var(--text-main)" }}>{st.v}</div>
+              <div style={{ fontSize:9.5, color: st.c || "var(--text-dim)" }}>{st.s}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ display:"flex", height:"calc(100vh - 178px)" }}>
+        {/* Sidebar */}
+        <div style={{ width:200, borderRight:"1px solid var(--border)", padding:"14px 0", flexShrink:0, overflowY:"auto" }}>
+          <div style={{ padding:"0 12px 10px", fontSize:9.5, color:"var(--text-faint)", textTransform:"uppercase", letterSpacing:"0.1em" }}>Domains</div>
+          <div onClick={() => setSelDomain(null)}
+            style={{ padding:"6px 12px", cursor:"pointer", fontSize:12.5, background: !selDomain ? "var(--accent-bg)" : "transparent", color: !selDomain ? "var(--accent)" : "var(--text-mid)", borderLeft: !selDomain ? "2px solid var(--accent)" : "2px solid transparent" }}>
+            All ({active.length})
+          </div>
+          {Object.entries(domainTree).sort().map(([d, info]) => (
+            <div key={d}>
+              <div onClick={() => setSelDomain(selDomain === d ? null : d)}
+                style={{ padding:"6px 12px", cursor:"pointer", fontSize:12, background: selDomain === d ? "var(--accent-bg)" : "transparent", color: selDomain === d ? "var(--accent)" : "var(--text-mid)", borderLeft: selDomain === d ? "2px solid var(--accent)" : "2px solid transparent", display:"flex", justifyContent:"space-between" }}>
+                <span>{d}</span><span style={{ fontSize:10, color:"var(--text-faint)" }}>{info.count}</span>
+              </div>
+              {Object.entries(info.subs).sort().map(([sub, cnt]) => (
+                <div key={sub} onClick={() => setSelDomain(selDomain === sub ? null : sub)}
+                  style={{ padding:"4px 12px 4px 24px", cursor:"pointer", fontSize:11, color: selDomain === sub ? "var(--accent)" : "var(--text-dim)", borderLeft: selDomain === sub ? "2px solid var(--accent)" : "2px solid transparent" }}>
+                  └ {sub.split("/").slice(2).join("/") || sub} ({cnt})
+                </div>
+              ))}
+            </div>
+          ))}
+
+          <div style={{ padding:"14px 12px 8px", fontSize:9.5, color:"var(--text-faint)", textTransform:"uppercase", letterSpacing:"0.1em", borderTop:"1px solid var(--border)", marginTop:10 }}>Types</div>
+          {Object.entries(TYPES).map(([k, v]) => {
+            const cnt = active.filter(i => i.type === k).length;
+            if (!cnt) return null;
+            return <div key={k} onClick={() => setSelType(selType === k ? null : k)}
+              style={{ padding:"4px 12px", cursor:"pointer", fontSize:11.5, color: selType === k ? v.color : "var(--text-mid)", background: selType === k ? `${v.color}18` : "transparent", borderLeft: selType === k ? `2px solid ${v.color}` : "2px solid transparent", display:"flex", justifyContent:"space-between" }}>
+              <span>{v.icon} {v.label}</span><span style={{ fontSize:10, color:"var(--text-faint)" }}>{cnt}</span>
+            </div>;
+          })}
+        </div>
+
+        {/* Main */}
+        <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}>
+          {/* Search */}
+          <div style={{ padding:"12px 20px", borderBottom:"1px solid var(--border)" }}>
+            <div style={{ position:"relative" }}>
+              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search knowledge..."
+                style={{ width:"100%", padding:"9px 12px 9px 32px", borderRadius:7, border:"1px solid var(--border-strong)", background:"var(--card)", color:"var(--text-main)", fontSize:12.5, outline:"none", fontFamily:"'JetBrains Mono',monospace" }} />
+              <span style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)", color:"var(--text-faint)", fontSize:13 }}>⌕</span>
+            </div>
+            {(selDomain || selType || search) && (
+              <div style={{ display:"flex", gap:5, marginTop:8, flexWrap:"wrap", alignItems:"center" }}>
+                <span style={{ fontSize:10, color:"var(--text-dim)" }}>Filters:</span>
+                {selDomain && <span onClick={() => setSelDomain(null)} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:"var(--accent-bg)", color:"var(--accent)", cursor:"pointer" }}>{selDomain} ×</span>}
+                {selType && <span onClick={() => setSelType(null)} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:`${TYPES[selType]?.color}18`, color:TYPES[selType]?.color, cursor:"pointer" }}>{TYPES[selType]?.label} ×</span>}
+                {search && <span onClick={() => setSearch("")} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:"var(--bar-track)", color:"var(--text-mid)", cursor:"pointer" }}>"{search}" ×</span>}
+                <span style={{ fontSize:10, color:"var(--text-faint)" }}>({filtered.length})</span>
+              </div>
+            )}
+          </div>
+
+          {/* Content */}
+          <div style={{ flex:1, overflow:"auto", padding: view === "list" ? "14px 20px" : "0" }}>
+            {loading ? (
+              <div style={{ textAlign:"center", padding:50, color:"var(--text-dim)" }}>Loading…</div>
+            ) : view === "list" ? (
+              <>
+                {Object.entries(grouped).sort().map(([domain, domainItems]) => (
+                  <div key={domain} style={{ marginBottom:20 }}>
+                    <div style={{ fontSize:11, fontWeight:600, color:"var(--text-mid)", textTransform:"uppercase", letterSpacing:"0.07em", marginBottom:7, paddingBottom:5, borderBottom:"1px solid var(--border)", display:"flex", justifyContent:"space-between" }}>
+                      <span>{domain}</span>
+                      <span style={{ fontWeight:400, color:"var(--text-faint)" }}>{domainItems.length}</span>
+                    </div>
+                    <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
+                      {domainItems.map(item => (
+                        <KCard key={item.id} item={item}
+                          isExpanded={expandedId === item.id}
+                          onToggle={id => setExpandedId(expandedId === id ? null : id)}
+                          onApprove={approve} onArchive={archive} onDelete={del} onEdit={edit} />
+                      ))}
+                    </div>
+                  </div>
+                ))}
+                {filtered.length === 0 && (
+                  <div style={{ textAlign:"center", padding:50, color:"var(--text-faint)" }}>
+                    <div style={{ fontSize:32, marginBottom:8 }}>🔮</div>
+                    <div style={{ fontSize:13 }}>No items found</div>
+                  </div>
+                )}
+              </>
+            ) : (
+              <GraphView
+                items={active}
+                highlightedIds={new Set(filtered.map(i => i.id))}
+                onSelectNode={id => { setView("list"); setExpandedId(id); }}
+              />
+            )}
+          </div>
+        </div>
+      </div>
+
+      {showAdd && <AddModal onAdd={addItem} onClose={() => setShowAdd(false)} />}
+
+      {toast && (
+        <div style={{ position:"fixed", bottom:20, left:"50%", transform:"translateX(-50%)", background:"var(--accent)", color:"#0b0b0b", padding:"8px 22px", borderRadius:7, fontSize:12.5, fontWeight:600, animation:"toastIn 0.25s ease", boxShadow:"0 8px 32px rgba(0,0,0,0.3)", zIndex:200 }}>
+          {toast}
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<MojoDashboard />);
+</script>
+</body>
+</html>

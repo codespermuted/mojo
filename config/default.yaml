@@ -1,0 +1,32 @@
+# Mojo Configuration
+# Location: ~/.mojo/config.yaml
+
+extraction:
+  auto_extract: true
+  batch_mode: false               # true → 하루 1회 배치 (Batch API)
+  filter_model: "claude-haiku-4-5-20251001"
+  structure_model: "claude-sonnet-4-6"
+  min_turns: 5                    # 이 미만 세션 스킵
+  max_session_tokens: 20000       # 초과 시 요약 후 추출
+
+serving:
+  token_budget: 3000              # CLAUDE.md 주입 토큰 예산
+  skill_threshold: 10             # 도메인 지식 N건 이상 → Skill 승격
+  auto_sync: true                 # SessionStart hook으로 자동 sync
+  confidence_threshold: 0.5       # 이 미만 주입 안 함
+
+quality:
+  auto_archive_days: 180
+  min_confidence: 0.3
+  require_approval: false         # true → 승인된 지식만 주입
+
+costs:
+  track_costs: true
+  monthly_budget_usd: 10.0        # 초과 시 추출 중단
+
+domains: []
+  # 도메인별 우선순위. 예:
+  # - path: "electricity/smp"
+  #   priority: 1.0
+  # - path: "ml/timeseries"
+  #   priority: 0.8

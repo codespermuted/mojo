@@ -1,0 +1,255 @@
+"""Mojo database operations."""
+
+import json
+import os
+import sqlite3
+from pathlib import Path
+from datetime import datetime
+from typing import Optional
+
+
+def get_mojo_home() -> Path:
+    """Get Mojo home directory. Configurable via MOJO_HOME env var.
+    
+    Priority:
+      1. MOJO_HOME env var (e.g., /mnt/nas/mojo, /data/mojo)
+      2. Default: ~/.mojo
+    """
+    return Path(os.environ.get("MOJO_HOME", Path.home() / ".mojo"))
+
+
+MOJO_DIR = get_mojo_home()
+DB_PATH = MOJO_DIR / "mojo.db"
+SCHEMA_PATH = Path(__file__).parent / "db" / "schema.sql"
+
+
+CONFIDENCE_GRADES = {
+    "A": {"label": "Verified",     "color": "#4ECDC4",
+          "description": "Multi-source confirmed or usage-validated"},
+    "B": {"label": "Corroborated", "color": "#87CEEB",
+          "description": "Single source with explicit reasoning, approved"},
+    "C": {"label": "Reported",     "color": "#FFB347",
+          "description": "Auto-extracted, single source, unverified"},
+    "D": {"label": "Inferred",     "color": "#DDA0DD",
+          "description": "Weak signal, ambiguous context"},
+    "F": {"label": "Contested",    "color": "#FF6B6B",
+          "description": "Contradicted, very low confidence, or long-unused"},
+}
+
+GRADE_ORDER = ["A", "B", "C", "D", "F"]
+
+
+def evidence_based_grade(item: dict) -> str:
+    """Grade based on evidence quality, not arbitrary thresholds.
+
+    Criteria (first match wins):
+
+    F - Contested:  confidence < 0.3, or never used for > 180 days.
+    A - Verified:   >= 2 related_ids (multi-source), or (usage >= 3 AND approved).
+    B - Corroborated: has non-empty reasoning AND approved.
+    D - Inferred:   confidence < 0.5, or (no reasoning AND not approved).
+    C - Reported:   default for auto-extracted items.
+    """
+    approved = bool(item.get("approved", 0))
+    usage = item.get("usage_count", 0) or 0
+    reasoning_text = (item.get("reasoning") or "").strip()
+    has_reasoning = bool(reasoning_text)
+    confidence = item.get("confidence", 0.5) or 0.0
+    related = item.get("related_ids") or []
+    if isinstance(related, str):
+        import json as _json
+        try:
+            related = _json.loads(related)
+        except (ValueError, TypeError):
+            related = []
+    has_multiple_sources = len(related) >= 2
+
+    # F: Contested — long unused or very low confidence
+    created = item.get("created_at", "")
+    if created:
+        try:
+            age_days = (datetime.now() - datetime.fromisoformat(created)).days
+            if usage == 0 and age_days > 180:
+                return "F"
+        except (ValueError, TypeError):
+            pass
+    if confidence < 0.3:
+        return "F"
+
+    # A: Verified
+    if has_multiple_sources or (usage >= 3 and approved):
+        return "A"
+
+    # B: Corroborated
+    if has_reasoning and approved:
+        return "B"
+
+    # D: Inferred
+    if confidence < 0.5 or (not has_reasoning and not approved):
+        return "D"
+
+    # C: Reported (default)
+    return "C"
+
+
+def get_db(db_path: Optional[Path] = None) -> sqlite3.Connection:
+    """Get database connection, creating schema if needed."""
+    path = db_path or DB_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(str(path))
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA foreign_keys=ON")
+    return db
+
+
+def init_db(db_path: Optional[Path] = None):
+    """Initialize database with schema."""
+    db = get_db(db_path)
+    schema_sql = SCHEMA_PATH.read_text()
+    db.executescript(schema_sql)
+    db.commit()
+    db.close()
+
+
+def register_session(db: sqlite3.Connection, session_id: str,
+                     transcript_path: str, project_path: str = ""):
+    """Register a captured session for extraction."""
+    db.execute("""
+        INSERT OR IGNORE INTO raw_sessions (id, transcript_path, project_path)
+        VALUES (?, ?, ?)
+    """, (session_id, transcript_path, project_path))
+    db.commit()
+
+
+def save_knowledge(db: sqlite3.Connection, item: dict):
+    """Save a knowledge item to the database."""
+    db.execute("""
+        INSERT OR REPLACE INTO knowledge 
+        (id, type, domain, title, content, reasoning, confidence,
+         source_session_id, related_ids, tags, usage_count, approved, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        item["id"], item["type"], item["domain"], item["title"],
+        item["content"], item.get("reasoning", ""),
+        item.get("confidence", 0.5), item.get("source_session_id", ""),
+        json.dumps(item.get("related_ids", []), ensure_ascii=False),
+        json.dumps(item.get("tags", []), ensure_ascii=False),
+        item.get("usage_count", 0), item.get("approved", 0),
+        datetime.now().isoformat()
+    ))
+    db.commit()
+
+
+def get_knowledge_by_domain(db: sqlite3.Connection, domain_prefix: str,
+                            min_confidence: float = 0.5,
+                            include_archived: bool = False) -> list[dict]:
+    """Get knowledge items matching a domain prefix."""
+    query = """
+        SELECT * FROM knowledge 
+        WHERE domain LIKE ? AND confidence >= ?
+    """
+    if not include_archived:
+        query += " AND archived = 0"
+    query += " ORDER BY confidence DESC, usage_count DESC"
+
+    rows = db.execute(query, (f"{domain_prefix}%", min_confidence)).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def get_all_knowledge(db: sqlite3.Connection,
+                      min_confidence: float = 0.0,
+                      approved_only: bool = False) -> list[dict]:
+    """Get all non-archived knowledge items."""
+    query = "SELECT * FROM knowledge WHERE archived = 0 AND confidence >= ?"
+    if approved_only:
+        query += " AND approved = 1"
+    query += " ORDER BY domain, confidence DESC"
+    rows = db.execute(query, (min_confidence,)).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def get_pending_sessions(db: sqlite3.Connection) -> list[dict]:
+    """Get sessions not yet extracted."""
+    rows = db.execute(
+        "SELECT * FROM raw_sessions WHERE extracted = 0 ORDER BY created_at"
+    ).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def mark_session_extracted(db: sqlite3.Connection, session_id: str):
+    """Mark a session as extracted."""
+    db.execute(
+        "UPDATE raw_sessions SET extracted = 1 WHERE id = ?", (session_id,)
+    )
+    db.commit()
+
+
+def increment_usage(db: sqlite3.Connection, knowledge_id: str):
+    """Increment usage count for a knowledge item."""
+    db.execute("""
+        UPDATE knowledge 
+        SET usage_count = usage_count + 1, 
+            last_used_at = datetime('now'),
+            updated_at = datetime('now')
+        WHERE id = ?
+    """, (knowledge_id,))
+    db.commit()
+
+
+def update_confidence(db: sqlite3.Connection, knowledge_id: str, delta: float):
+    """Adjust confidence score, clamped to [0, 1]."""
+    db.execute("""
+        UPDATE knowledge 
+        SET confidence = MAX(0.0, MIN(1.0, confidence + ?)),
+            updated_at = datetime('now')
+        WHERE id = ?
+    """, (delta, knowledge_id))
+    db.commit()
+
+
+def log_extraction_cost(db: sqlite3.Connection, session_id: str,
+                        stage: str, model: str,
+                        input_tokens: int, output_tokens: int, cost_usd: float):
+    """Log API cost for an extraction step."""
+    db.execute("""
+        INSERT INTO extraction_costs (session_id, stage, model, input_tokens, output_tokens, cost_usd)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (session_id, stage, model, input_tokens, output_tokens, cost_usd))
+    db.commit()
+
+
+def get_stats(db: sqlite3.Connection) -> dict:
+    """Get overall statistics."""
+    total = db.execute("SELECT COUNT(*) FROM knowledge WHERE archived=0").fetchone()[0]
+    by_type = db.execute(
+        "SELECT type, COUNT(*) as cnt FROM knowledge WHERE archived=0 GROUP BY type"
+    ).fetchall()
+    by_domain = db.execute(
+        "SELECT domain, COUNT(*) as cnt FROM knowledge WHERE archived=0 GROUP BY domain ORDER BY cnt DESC"
+    ).fetchall()
+    total_cost = db.execute(
+        "SELECT COALESCE(SUM(cost_usd), 0) FROM extraction_costs"
+    ).fetchone()[0]
+    total_usage = db.execute(
+        "SELECT COALESCE(SUM(usage_count), 0) FROM knowledge"
+    ).fetchone()[0]
+
+    return {
+        "total_knowledge": total,
+        "by_type": {r["type"]: r["cnt"] for r in by_type},
+        "by_domain": {r["domain"]: r["cnt"] for r in by_domain},
+        "total_extraction_cost_usd": round(total_cost, 4),
+        "total_usage_count": total_usage,
+    }
+
+
+def _row_to_dict(row: sqlite3.Row) -> dict:
+    d = dict(row)
+    for field in ("related_ids", "tags"):
+        if field in d and isinstance(d[field], str):
+            try:
+                d[field] = json.loads(d[field])
+            except (json.JSONDecodeError, TypeError):
+                d[field] = []
+    return d

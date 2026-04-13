@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mojo-extract"
+version = "0.1.0"
+description = "Knowledge extraction pipeline for Mojo"
+requires-python = ">=3.10"
+dependencies = [
+    "anthropic>=0.40.0",
+    "pyyaml>=6.0",
+    "jinja2>=3.1",
+    "scikit-learn>=1.4",       # TF-IDF dedup
+    "tiktoken>=0.7",           # token counting
+    "click>=8.1",              # CLI (Python side)
+    "rich>=13.0",              # pretty output
+    "fastapi>=0.110",          # dashboard backend
+    "uvicorn>=0.29",           # ASGI server
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+mojo-extract = "extract.pipeline:main"
+mojo-sync = "serve.sync:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["extract", "serve", "hooks", "dashboard"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"db_ops.py" = "db_ops.py"
+"scan.py" = "scan.py"
+"search.py" = "search.py"
+"stats.py" = "stats.py"
+"review.py" = "review.py"
+"init.py" = "init.py"
+"import_seed.py" = "import_seed.py"

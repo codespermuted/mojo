@@ -1,0 +1,72 @@
+[
+  {
+    "id": "example-001",
+    "type": "domain_rule",
+    "domain": "web/api",
+    "title": "REST API pagination은 cursor 기반 사용",
+    "content": "offset 기반 pagination은 대규모 데이터에서 성능 저하. cursor 기반 사용 권장.",
+    "reasoning": "offset이 커지면 DB가 앞의 모든 row를 스캔해야 함. cursor는 인덱스 기반이라 일정한 성능.",
+    "confidence": 0.90,
+    "source_session_id": "example-seed",
+    "related_ids": ["example-002"],
+    "tags": ["api", "pagination", "performance"],
+    "usage_count": 0,
+    "approved": 1
+  },
+  {
+    "id": "example-002",
+    "type": "anti_pattern",
+    "domain": "web/api",
+    "title": "N+1 쿼리 패턴 금지",
+    "content": "ORM 사용 시 related object를 loop 안에서 개별 조회하면 안 됨. prefetch/join 사용.",
+    "reasoning": "100개 row에 대해 100번 추가 쿼리 발생. DB 부하와 latency 급증.",
+    "confidence": 0.95,
+    "source_session_id": "example-seed",
+    "related_ids": ["example-001"],
+    "tags": ["orm", "database", "performance"],
+    "usage_count": 0,
+    "approved": 1
+  },
+  {
+    "id": "example-003",
+    "type": "architecture_decision",
+    "domain": "ml/training",
+    "title": "실험 추적은 MLflow 표준 사용",
+    "content": "모든 ML 실험은 MLflow로 추적. run_name 컨벤션: {model}_{dataset}_{date}.",
+    "reasoning": "실험 재현성과 비교 분석의 기본. 컨벤션 없으면 수백 개 run에서 결과 찾기 어려움.",
+    "confidence": 0.88,
+    "source_session_id": "example-seed",
+    "related_ids": [],
+    "tags": ["mlflow", "experiment", "convention"],
+    "usage_count": 0,
+    "approved": 1
+  },
+  {
+    "id": "example-004",
+    "type": "debug_playbook",
+    "domain": "infra/docker",
+    "title": "컨테이너 OOM 시 memory limit 확인",
+    "content": "컨테이너가 갑자기 죽으면 dmesg | grep -i oom 으로 OOM killer 확인. docker stats로 메모리 사용량 모니터링.",
+    "reasoning": "exit code 137은 SIGKILL (OOM). 로그에 에러 없이 죽으므로 놓치기 쉬움.",
+    "confidence": 0.85,
+    "source_session_id": "example-seed",
+    "related_ids": [],
+    "tags": ["docker", "oom", "debugging"],
+    "usage_count": 0,
+    "approved": 1
+  },
+  {
+    "id": "example-005",
+    "type": "code_pattern",
+    "domain": "python/async",
+    "title": "asyncio.gather에 return_exceptions=True",
+    "content": "여러 coroutine을 동시 실행할 때 asyncio.gather에 return_exceptions=True 추가. 하나 실패해도 나머지 결과를 받을 수 있음.",
+    "reasoning": "기본값 False면 하나 실패 시 전체 취소. 부분 성공이 필요한 경우 예외를 결과로 받아 개별 처리.",
+    "confidence": 0.82,
+    "source_session_id": "example-seed",
+    "related_ids": [],
+    "tags": ["asyncio", "error_handling", "python"],
+    "usage_count": 0,
+    "approved": 1
+  }
+]
