@@ -13,7 +13,8 @@ from importlib import import_module
 COMMANDS: dict[str, tuple[str, str, str]] = {
     # name           (module,              fn,     one-line help)
     "init":         ("init",              "main", "Create ~/.mojo, copy config, register Claude Code hooks"),
-    "dashboard":    ("dashboard.server",  "main", "Run the web dashboard (http://localhost:8765)"),
+    "dashboard":    ("dashboard.server",        "main", "Run the web dashboard (http://localhost:8765)"),
+    "dashboard-export": ("dashboard.export_static", "main", "Export the dashboard as a single read-only HTML file"),
     "scan":         ("scan",              "main", "Rule-based git / folder / sessions scan (free)"),
     "extract":      ("extract.pipeline",  "main", "Run the LLM extraction pipeline (Haiku -> Sonnet)"),
     "sync":         ("serve.sync",        "main", "Write CLAUDE.md / SKILL.md into a project"),
