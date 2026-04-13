@@ -381,13 +381,22 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
       .force("collision", d3.forceCollide()
         .radius(d => statusOf(d) === "detail" ? 12 : 36));
 
+    // Pick theme-aware colors from CSS vars so both light/dark work.
+    const cssVar = (name, fallback) =>
+      getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+    const labelColor = cssVar("--text-mid",  "rgba(0,0,0,0.55)");
+    const dimColor   = cssVar("--text-dim",  "rgba(0,0,0,0.4)");
+    const faintColor = cssVar("--text-faint","rgba(0,0,0,0.25)");
+    const borderColor = cssVar("--border-strong", "rgba(0,0,0,0.1)");
+
     // Boundary decoration (drawn first so nodes/links overlay it)
     const decor = g.append("g").attr("class", "boundary-decor");
     decor.append("circle")
       .attr("cx", cx).attr("cy", cy)
       .attr("r", boundaryRadius)
       .attr("fill", "none")
-      .attr("stroke", "rgba(255,255,255,0.06)")
+      .attr("stroke", borderColor)
+      .attr("stroke-opacity", 0.6)
       .attr("stroke-width", 1)
       .attr("stroke-dasharray", "4,8");
     decor.append("text")
@@ -397,7 +406,7 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
       .style("font-size", "10px")
       .style("letter-spacing", "0.12em")
       .style("text-transform", "uppercase")
-      .style("fill", "rgba(255,255,255,0.22)")
+      .style("fill", faintColor)
       .style("pointer-events", "none")
       .text("connected");
     decor.append("text")
@@ -407,11 +416,9 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
       .style("font-size", "10px")
       .style("letter-spacing", "0.12em")
       .style("text-transform", "uppercase")
-      .style("fill", "rgba(255,255,255,0.22)")
+      .style("fill", faintColor)
       .style("pointer-events", "none")
       .text("unlinked");
-
-    const labelColor = getComputedStyle(document.documentElement).getPropertyValue("--text-mid").trim() || "rgba(0,0,0,0.55)";
 
     // Tooltip
     const wrapper = svgRef.current.parentNode;
@@ -445,9 +452,14 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
 
     const link = g.append("g").selectAll("line").data(links).join("line")
       .attr("stroke", d => {
-        if (d.type === "parent") return "rgba(255,255,255,0.08)";
-        if (d.type === "explicit") return "rgba(78,205,196,0.5)";
-        return "rgba(255,255,255,0.06)";
+        if (d.type === "parent") return borderColor;
+        if (d.type === "explicit") return accentColor;
+        return borderColor;
+      })
+      .attr("stroke-opacity", d => {
+        if (d.type === "parent") return 0.5;
+        if (d.type === "explicit") return 0.55;
+        return 0.35;
       })
       .attr("stroke-width", d => {
         if (d.type === "parent") return 0.5;
@@ -621,12 +633,12 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
       .attr("fill", d => {
         if (statusOf(d) !== "detail") return (GRADES[gradeOf(d)]?.color || "#999") + "30";
         if (!d.parent_id) return accentColor + "10";
-        return "rgba(255,255,255,0.04)";
+        return "transparent";
       })
       .attr("stroke", d => {
         if (statusOf(d) !== "detail") return TIERS[tierOf(d)]?.color || "#999";
         if (!d.parent_id) return accentColor + "80";
-        return "rgba(255,255,255,0.15)";
+        return borderColor;
       })
       .attr("stroke-width", d => {
         if (statusOf(d) === "detail") return d.parent_id ? 0.8 : 1.2;
@@ -732,7 +744,7 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
           .attr("dy", dy)
           .attr("text-anchor", "middle")
           .style("font-size", "10px")
-          .style("fill", "rgba(255,255,255,0.8)")
+          .style("fill", labelColor)
           .style("pointer-events", "none")
           .text((d.title || "").length > 30 ? d.title.slice(0, 28) + "…" : (d.title || ""));
       }
@@ -785,7 +797,7 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
   return (
     <div style={{ width:"100%", height:"100%", position:"relative" }}>
       <svg ref={svgRef} style={{ width:"100%", height:"100%", background:"var(--graph-bg)", borderRadius:8 }} />
-      <div style={{ position:"absolute", bottom:8, left:8, right:8, display:"flex", alignItems:"center", gap:12, fontSize:10, color:"var(--text-dim)", flexWrap:"wrap", padding:"6px 10px", borderRadius:6, background:"rgba(0,0,0,0.35)", backdropFilter:"blur(4px)" }}>
+      <div style={{ position:"absolute", bottom:8, left:8, right:8, display:"flex", alignItems:"center", gap:12, fontSize:10, color:"var(--text-dim)", flexWrap:"wrap", padding:"6px 10px", borderRadius:6, background:"var(--card)", border:"1px solid var(--border)", backdropFilter:"blur(4px)" }}>
         <span>● connected knowledge</span>
         <span>○ unlinked details (outer ring)</span>
         <span><span style={{ display:"inline-block", width:20, height:2, background:"rgba(78,205,196,0.5)", verticalAlign:"middle", marginRight:4 }}/>related</span>
