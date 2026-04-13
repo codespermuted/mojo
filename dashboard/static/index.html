@@ -348,8 +348,13 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
     });
     const isOrphan = d => !connectedIds.has(d.id);
 
-    const orbitRadius = Math.min(W, H) * 0.32;
-    const boundaryRadius = orbitRadius * 0.65;
+    // Leave room for the bottom legend overlay so nothing gets clipped under it.
+    const bottomPad = 44;
+    const cx = W / 2;
+    const cy = (H - bottomPad) / 2;
+    const usableH = H - bottomPad;
+    const orbitRadius = Math.min(W, usableH) * 0.34;
+    const boundaryRadius = orbitRadius * 0.62;
 
     const sim = d3.forceSimulation(nodes)
       .force("link", d3.forceLink(links).id(d => d.id)
@@ -368,41 +373,41 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
         .distanceMax(420))
       .force("orbit", d3.forceRadial(
         d => isOrphan(d) ? orbitRadius : 0,
-        W / 2, H / 2,
+        cx, cy,
       ).strength(d => isOrphan(d) ? 0.3 : 0))
-      .force("x", d3.forceX(W / 2).strength(d => isOrphan(d) ? 0 : 0.08))
-      .force("y", d3.forceY(H / 2 - 40).strength(d => isOrphan(d) ? 0 : 0.08))
-      .force("center", d3.forceCenter(W / 2, H / 2))
+      .force("x", d3.forceX(cx).strength(d => isOrphan(d) ? 0 : 0.08))
+      .force("y", d3.forceY(cy).strength(d => isOrphan(d) ? 0 : 0.08))
+      .force("center", d3.forceCenter(cx, cy))
       .force("collision", d3.forceCollide()
-        .radius(d => statusOf(d) === "detail" ? 10 : 36));
+        .radius(d => statusOf(d) === "detail" ? 12 : 36));
 
     // Boundary decoration (drawn first so nodes/links overlay it)
     const decor = g.append("g").attr("class", "boundary-decor");
     decor.append("circle")
-      .attr("cx", W / 2).attr("cy", H / 2)
+      .attr("cx", cx).attr("cy", cy)
       .attr("r", boundaryRadius)
       .attr("fill", "none")
-      .attr("stroke", "rgba(255,255,255,0.04)")
+      .attr("stroke", "rgba(255,255,255,0.06)")
       .attr("stroke-width", 1)
       .attr("stroke-dasharray", "4,8");
     decor.append("text")
-      .attr("x", W / 2)
-      .attr("y", H / 2 - boundaryRadius - 8)
+      .attr("x", cx)
+      .attr("y", cy - boundaryRadius - 10)
       .attr("text-anchor", "middle")
-      .style("font-size", "9px")
-      .style("letter-spacing", "0.1em")
+      .style("font-size", "10px")
+      .style("letter-spacing", "0.12em")
       .style("text-transform", "uppercase")
-      .style("fill", "rgba(255,255,255,0.12)")
+      .style("fill", "rgba(255,255,255,0.22)")
       .style("pointer-events", "none")
       .text("connected");
     decor.append("text")
-      .attr("x", W / 2)
-      .attr("y", H / 2 - orbitRadius - 8)
+      .attr("x", cx)
+      .attr("y", cy - orbitRadius - 12)
       .attr("text-anchor", "middle")
-      .style("font-size", "9px")
-      .style("letter-spacing", "0.1em")
+      .style("font-size", "10px")
+      .style("letter-spacing", "0.12em")
       .style("text-transform", "uppercase")
-      .style("fill", "rgba(255,255,255,0.08)")
+      .style("fill", "rgba(255,255,255,0.22)")
       .style("pointer-events", "none")
       .text("unlinked");
 
@@ -718,12 +723,16 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
       });
 
       if (statusOf(d) === "detail") {
+        // Flip label above the node if it sits below the graph center,
+        // so it never falls under the bottom legend overlay.
+        const flipAbove = (d.y || 0) > cy;
+        const dy = flipAbove ? -(nodeRadius(d) + 6) : (nodeRadius(d) + 12);
         d3.select(this).append("text")
           .attr("class", "hover-label")
-          .attr("dy", nodeRadius(d) + 12)
+          .attr("dy", dy)
           .attr("text-anchor", "middle")
-          .style("font-size", "9px")
-          .style("fill", "rgba(255,255,255,0.65)")
+          .style("font-size", "10px")
+          .style("fill", "rgba(255,255,255,0.8)")
           .style("pointer-events", "none")
           .text((d.title || "").length > 30 ? d.title.slice(0, 28) + "…" : (d.title || ""));
       }
@@ -740,12 +749,14 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
       try {
         const bbox = g.node().getBBox();
         if (!bbox.width || !bbox.height) return;
-        const rawScale = 0.85 / Math.max(bbox.width / W, bbox.height / H);
+        // Reserve bottom padding so the legend overlay doesn't clip nodes/labels.
+        const effH = Math.max(usableH, 1);
+        const rawScale = 0.82 / Math.max(bbox.width / W, bbox.height / effH);
         const nodeCount = nodes.length;
         const minScale = nodeCount < 10 ? 1.2 : nodeCount < 20 ? 0.8 : 0.5;
         const scale = Math.max(rawScale, minScale);
-        const tx = W / 2 - scale * (bbox.x + bbox.width / 2);
-        const ty = H / 2 - scale * (bbox.y + bbox.height / 2);
+        const tx = cx - scale * (bbox.x + bbox.width / 2);
+        const ty = cy - scale * (bbox.y + bbox.height / 2);
         svg.transition().duration(750).call(
           zoom.transform,
           d3.zoomIdentity.translate(tx, ty).scale(scale)
@@ -774,7 +785,7 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
   return (
     <div style={{ width:"100%", height:"100%", position:"relative" }}>
       <svg ref={svgRef} style={{ width:"100%", height:"100%", background:"var(--graph-bg)", borderRadius:8 }} />
-      <div style={{ position:"absolute", bottom:12, left:12, right:12, display:"flex", alignItems:"center", gap:12, fontSize:10, color:"var(--text-dim)", flexWrap:"wrap" }}>
+      <div style={{ position:"absolute", bottom:8, left:8, right:8, display:"flex", alignItems:"center", gap:12, fontSize:10, color:"var(--text-dim)", flexWrap:"wrap", padding:"6px 10px", borderRadius:6, background:"rgba(0,0,0,0.35)", backdropFilter:"blur(4px)" }}>
         <span>● connected knowledge</span>
         <span>○ unlinked details (outer ring)</span>
         <span><span style={{ display:"inline-block", width:20, height:2, background:"rgba(78,205,196,0.5)", verticalAlign:"middle", marginRight:4 }}/>related</span>
