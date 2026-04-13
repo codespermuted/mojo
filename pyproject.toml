@@ -5,8 +5,35 @@ build-backend = "hatchling.build"
 [project]
 name = "mojo-extract"
 version = "0.1.0"
-description = "Knowledge extraction pipeline for Mojo"
+description = "Local-first knowledge pipeline that distills Claude Code sessions into durable, reusable CLAUDE.md context."
+readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.10"
+authors = [{ name = "codespermuted" }]
+keywords = [
+    "claude-code",
+    "anthropic",
+    "knowledge-management",
+    "llm",
+    "developer-tools",
+    "prompt-engineering",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development",
+    "Topic :: Software Development :: Documentation",
+    "Topic :: Utilities",
+]
 dependencies = [
     "anthropic>=0.40.0",
     "pyyaml>=6.0",
@@ -21,6 +48,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[project.urls]
+Homepage = "https://github.com/codespermuted/mojo"
+Repository = "https://github.com/codespermuted/mojo"
+Issues = "https://github.com/codespermuted/mojo/issues"
+Changelog = "https://github.com/codespermuted/mojo/blob/main/CHANGELOG.md"
 
 [project.scripts]
 mojo = "mojo_cli:main"
