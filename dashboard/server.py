@@ -354,6 +354,42 @@ def archive_knowledge(kid: str):
     return _fetch_one(kid)
 
 
+@app.post("/api/knowledge/{kid}/unarchive")
+def unarchive_knowledge(kid: str):
+    db = get_db()
+    try:
+        db.execute(
+            "UPDATE knowledge SET archived = 0, updated_at = ? WHERE id = ?",
+            (datetime.now().isoformat(), kid),
+        )
+        db.commit()
+    finally:
+        db.close()
+    return _fetch_one(kid)
+
+
+@app.post("/api/knowledge/{kid}/unstructure")
+def unstructure_summary(kid: str):
+    """Reverse a structure op: delete the summary and restore its details."""
+    row = _fetch_one(kid)
+    if row.get("status") != "summary":
+        raise HTTPException(status_code=400, detail="Only summaries can be unstructured")
+    detail_ids = row.get("detail_ids") or []
+    db = get_db()
+    try:
+        now = datetime.now().isoformat()
+        for did in detail_ids:
+            db.execute(
+                "UPDATE knowledge SET parent_id = NULL, status = 'detail', updated_at = ? WHERE id = ?",
+                (now, did),
+            )
+        db.execute("DELETE FROM knowledge WHERE id = ?", (kid,))
+        db.commit()
+    finally:
+        db.close()
+    return {"unstructured": kid, "detail_ids": detail_ids}
+
+
 def _structure_details(detail_ids: list[str]) -> dict:
     """Collapse a list of detail rows into a new summary via Sonnet.
 

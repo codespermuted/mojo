@@ -33,22 +33,109 @@ single source being mandatory.
 
 ## Quick Start
 
+Pick whichever install path matches your environment — all three end up at
+the same place (a local `mojo.db` plus Claude Code hooks).
+
+### Option A — Clone from GitHub (recommended)
+
 ```bash
-git clone https://github.com/<your-fork>/mojo.git
+git clone https://github.com/codespermuted/mojo.git
 cd mojo
 pip install -e .
 
-# 1. Initialize (creates DB, installs Claude Code hooks)
+python init.py                                   # creates DB + registers hooks
+python dashboard/server.py                       # http://localhost:8765
+```
+
+### Option B — Run against an existing local checkout
+
+If you already have the source somewhere on disk (e.g. a ZIP download, a
+worktree, or a symlinked copy):
+
+```bash
+cd /path/to/mojo        # wherever the source lives
+pip install -e .        # or: pip install -r requirements.txt
+python init.py
+```
+
+### Option C — Keep data outside the source tree
+
+Mojo's storage location is controlled by `MOJO_HOME`. Everything writable
+(the SQLite DB, generated skills, hook scripts) lives there, so you can put
+the source read-only in `/opt/mojo` and the data in `~/.mojo`, on an
+external drive, or in a per-project folder:
+
+```bash
+# Default: ~/.mojo
 python init.py
 
-# 2. (Optional) Seed from an existing git project
-python scan.py git /path/to/your/project
+# External drive / NAS
+export MOJO_HOME=/mnt/nas/mojo
+python init.py
 
-# 3. Sync distilled knowledge into a project's CLAUDE.md
-python -m serve.sync --project /path/to/your/project
-
-# 4. Use Claude Code normally — new knowledge accumulates automatically
+# Per-project isolation (keeps one project's knowledge out of the global store)
+MOJO_HOME=./.mojo python init.py
 ```
+
+Once `init.py` has run, hooks fire automatically on the next Claude Code
+session — no further setup is required.
+
+## Adding Knowledge
+
+Mojo is designed so that every way of adding knowledge ends up in the same
+SQLite store and the same dashboard. You can mix and match freely.
+
+| Source                    | Command / Action                                    | Tier |
+|---------------------------|-----------------------------------------------------|------|
+| **Git history**           | `python scan.py git /path/to/project`               | T2   |
+| **Folder scan**           | `python scan.py folder /path/to/project`            | T2   |
+| **Past Claude sessions**  | `python scan.py sessions`                           | T3   |
+| **Live Claude sessions**  | automatic (hooks installed by `init.py`)            | T3   |
+| **Hand-written seed**     | `python import_seed.py seeds/seed_knowledge.json`   | T1   |
+| **Dashboard → + Add**     | click **+ Add** in the top bar of the dashboard     | T1   |
+| **GitHub repo (remote)**  | `git clone` it first, then `python scan.py git <dir>` | T2   |
+
+A quick tour of the typical additions:
+
+```bash
+# Scan a project you already have locally
+python scan.py git   ~/code/my-service
+python scan.py folder ~/code/my-service
+
+# Scan a public repo without cloning it into the Mojo tree
+git clone --depth 200 https://github.com/org/repo /tmp/repo
+python scan.py git /tmp/repo
+
+# Import a curated seed JSON
+python import_seed.py seeds/seed_knowledge.json
+
+# Sync the result into any project's CLAUDE.md
+python -m serve.sync --project ~/code/my-service
+```
+
+Every added item shows up in the dashboard, where you can approve, edit,
+structure, or archive it. Mutating actions (archive, structure) emit an
+**undo toast** so accidental edits are one click away from being reverted.
+
+## Deployment
+
+Mojo is a local-first tool — there is no cloud component. "Deploying" it
+means one of:
+
+1. **Personal laptop** — run `python dashboard/server.py` whenever you want
+   to browse your knowledge base, or leave it running in the background.
+2. **Always-on box (home server / NAS)** — point `MOJO_HOME` at a persistent
+   path and run the dashboard under `systemd`, `launchd`, or `tmux`:
+
+   ```bash
+   MOJO_HOME=/srv/mojo python dashboard/server.py --host 0.0.0.0 --port 8765 --no-browser
+   ```
+3. **Per-project sidecar** — keep `MOJO_HOME=./.mojo` inside each repo so
+   every project has its own isolated knowledge store and CLAUDE.md
+   injections. Useful when you don't want cross-project knowledge bleed.
+
+Back up `$MOJO_HOME/mojo.db` (it's a plain SQLite file) to snapshot your
+entire knowledge base.
 
 ## Demo: Open-Source Repositories
 

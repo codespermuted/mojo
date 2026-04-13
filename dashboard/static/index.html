@@ -151,6 +151,14 @@ const api = {
     fetch(`/api/knowledge/${encodeURIComponent(id)}/approve`, {method:"POST"}).then(r => r.json()),
   archive: (id) =>
     fetch(`/api/knowledge/${encodeURIComponent(id)}/archive`, {method:"POST"}).then(r => r.json()),
+  unarchive: (id) =>
+    fetch(`/api/knowledge/${encodeURIComponent(id)}/unarchive`, {method:"POST"}).then(r => r.json()),
+  unstructure: (id) =>
+    fetch(`/api/knowledge/${encodeURIComponent(id)}/unstructure`, {method:"POST"}).then(async r => {
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
+      return data;
+    }),
   structure: (detail_ids) =>
     fetch(`/api/knowledge/structure`, {
       method: "POST",
@@ -910,6 +918,7 @@ function KCard({
   item, isExpanded, onToggle, onApprove, onArchive, onDelete, onEdit,
   onStructure, onRefine, selectable, selected, onToggleSelect,
   details, // pre-loaded detail rows when this is a summary
+  expandedDetailIds, onToggleDetail,
 }) {
   const [editing, setEditing] = useState(false);
   const [ec, setEc] = useState(item.content);
@@ -1017,16 +1026,52 @@ function KCard({
               </div>
               {isSummary && details && details.length > 0 && (
                 <div style={{ marginTop:10, paddingLeft:12, borderLeft:"2px solid rgba(255,255,255,0.06)" }}>
-                  <div style={{ fontSize:10, color:"var(--text-dim)", marginBottom:5, textTransform:"uppercase", letterSpacing:"0.06em" }}>
-                    📎 Evidence ({details.length})
+                  <div style={{ fontSize:10, color:"var(--text-dim)", marginBottom:5, textTransform:"uppercase", letterSpacing:"0.06em", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                    <span>📎 Evidence ({details.length})</span>
+                    {onToggleDetail && (
+                      <span
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const allOpen = details.every(d => expandedDetailIds?.has(d.id));
+                          details.forEach(d => {
+                            const isOpen = expandedDetailIds?.has(d.id);
+                            if (allOpen ? isOpen : !isOpen) onToggleDetail(d.id);
+                          });
+                        }}
+                        style={{ cursor:"pointer", color:"var(--text-dim)", fontSize:10, textTransform:"none", letterSpacing:0 }}>
+                        {details.every(d => expandedDetailIds?.has(d.id)) ? "collapse all" : "expand all"}
+                      </span>
+                    )}
                   </div>
-                  {details.map(d => (
-                    <div key={d.id} style={{ padding:"5px 9px", marginBottom:3, borderRadius:4, background:"rgba(148,163,184,0.06)", fontSize:11, color:"var(--text-mid)" }}>
-                      <span style={{ color:"var(--text-faint)", marginRight:5 }}>└</span>
-                      <span style={{ fontWeight:600, color:"var(--text-main)" }}>{d.title}</span>
-                      {d.content && <div style={{ marginTop:2, marginLeft:12, color:"var(--text-dim)", fontSize:10.5 }}>{d.content.slice(0, 180)}{d.content.length > 180 ? "…" : ""}</div>}
-                    </div>
-                  ))}
+                  {details.map(d => {
+                    const open = expandedDetailIds?.has(d.id);
+                    return (
+                      <div key={d.id}
+                        onClick={(e) => { e.stopPropagation(); onToggleDetail && onToggleDetail(d.id); }}
+                        style={{ padding:"6px 10px", marginBottom:4, borderRadius:5, background:"rgba(148,163,184,0.06)", fontSize:11, color:"var(--text-mid)", cursor:"pointer", border:"1px solid rgba(148,163,184,0.08)" }}>
+                        <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+                          <span style={{ color:"var(--text-faint)", width:10, display:"inline-block" }}>{open ? "▾" : "▸"}</span>
+                          <span style={{ fontWeight:600, color:"var(--text-main)", flex:1 }}>{d.title}</span>
+                          <TypeBadge type={d.type} />
+                        </div>
+                        {open ? (
+                          <div style={{ marginTop:6, marginLeft:15 }}>
+                            <div style={{ color:"var(--text-main)", fontSize:11.5, lineHeight:1.5, whiteSpace:"pre-wrap", fontFamily:"'JetBrains Mono',monospace" }}>{d.content}</div>
+                            {d.reasoning && (
+                              <div style={{ marginTop:5, color:"var(--text-mid)", fontSize:10.5, fontStyle:"italic", borderLeft:"2px solid var(--border-strong)", paddingLeft:8, whiteSpace:"pre-wrap" }}>{d.reasoning}</div>
+                            )}
+                            {(d.tags || []).length > 0 && (
+                              <div style={{ marginTop:5, display:"flex", flexWrap:"wrap", gap:3 }}>
+                                {(d.tags || []).map(tag => <span key={tag} style={{ fontSize:9, padding:"1px 5px", borderRadius:3, background:"var(--bar-track)", color:"var(--text-mid)" }}>#{tag}</span>)}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          d.content && <div style={{ marginTop:2, marginLeft:15, color:"var(--text-dim)", fontSize:10.5, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{d.content.slice(0, 160)}{d.content.length > 160 ? "…" : ""}</div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </>
@@ -1043,27 +1088,51 @@ function MojoDashboard() {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [selDomain, setSelDomain] = useState(null);
-  const [selType, setSelType] = useState(null);
-  const [selSource, setSelSource] = useState(null);
-  const [selStatus, setSelStatus] = useState(null);  // summary | standalone | detail | unlinked
+  const [selDomains, setSelDomains] = useState(() => new Set());
+  const [selTypes, setSelTypes] = useState(() => new Set());
+  const [selSources, setSelSources] = useState(() => new Set());
+  const [selStatuses, setSelStatuses] = useState(() => new Set());
+  const [expandedDomains, setExpandedDomains] = useState(() => new Set());
   const [selDetailIds, setSelDetailIds] = useState(() => new Set());
   const [detailsByParent, setDetailsByParent] = useState({});
+  const [expandedDetailIds, setExpandedDetailIds] = useState(() => new Set());
   const [structuring, setStructuring] = useState(false);
   const [fillingReasons, setFillingReasons] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
   const [showArchived, setShowArchived] = useState(false);
   const [view, setView] = useState("list");
   const [showAdd, setShowAdd] = useState(false);
-  const [toast, setToast] = useState(null);
+  const [toast, setToast] = useState(null);  // { msg, undo? }
   const [theme, setTheme] = useState(() => localStorage.getItem("mojo-theme") || "dark");
+
+  // Helper: toggle a value in a Set-state
+  const toggleInSet = (setter) => (value) => {
+    setter(prev => {
+      const next = new Set(prev);
+      if (next.has(value)) next.delete(value); else next.add(value);
+      return next;
+    });
+  };
+  const toggleDomain = toggleInSet(setSelDomains);
+  const toggleType = toggleInSet(setSelTypes);
+  const toggleSource = toggleInSet(setSelSources);
+  const toggleStatus = toggleInSet(setSelStatuses);
+  const toggleDomainExpand = toggleInSet(setExpandedDomains);
+  const toggleDetailExpand = toggleInSet(setExpandedDetailIds);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
     localStorage.setItem("mojo-theme", theme);
   }, [theme]);
 
-  const flash = useCallback((m) => { setToast(m); setTimeout(() => setToast(null), 2200); }, []);
+  const toastTimerRef = useRef(null);
+  const flash = useCallback((m, undo) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    const payload = typeof m === "string" ? { msg: m, undo: undo || null } : m;
+    setToast(payload);
+    const ttl = payload.undo ? 5500 : 2200;
+    toastTimerRef.current = setTimeout(() => setToast(null), ttl);
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -1080,7 +1149,15 @@ function MojoDashboard() {
   useEffect(() => { refresh(); }, [refresh]);
 
   const approve = async (id) => { await api.approve(id); flash(`✓ Approved: ${id}`); refresh(); };
-  const archive = async (id) => { await api.archive(id); flash(`📦 Archived: ${id}`); refresh(); };
+  const archive = async (id) => {
+    await api.archive(id);
+    refresh();
+    flash(`📦 Archived: ${id}`, async () => {
+      await api.unarchive(id);
+      flash(`↺ Restored: ${id}`);
+      refresh();
+    });
+  };
   const del     = async (id) => { await api.del(id); flash(`🗑 Deleted: ${id}`); refresh(); };
   const edit    = async (id, c, r) => { await api.update(id, { content:c, reasoning:r }); flash(`✎ Updated: ${id}`); refresh(); };
   const addItem = async (payload) => { const it = await api.create(payload); flash(`✓ Added: ${it.title}`); refresh(); };
@@ -1117,9 +1194,20 @@ function MojoDashboard() {
     setStructuring(true);
     try {
       const result = await api.structure(ids);
-      flash(`🔄 Structured ${ids.length} → ${result.id} ($${(result.cost_usd || 0).toFixed(4)})`);
       setSelDetailIds(new Set());
       refresh();
+      flash(
+        `🔄 Structured ${ids.length} → ${result.id} ($${(result.cost_usd || 0).toFixed(4)})`,
+        async () => {
+          try {
+            await api.unstructure(result.id);
+            flash(`↺ Unstructured: ${result.id}`);
+            refresh();
+          } catch (err) {
+            flash(`✗ Undo failed: ${err.message}`);
+          }
+        },
+      );
     } catch (err) {
       flash(`✗ Structure failed: ${err.message}`);
     } finally {
@@ -1129,17 +1217,37 @@ function MojoDashboard() {
 
   const active = items; // backend already respects showArchived
 
+  const loadDetailsFor = useCallback(async (id) => {
+    if (detailsByParent[id]) return detailsByParent[id];
+    try {
+      const rows = await api.details(id);
+      setDetailsByParent(prev => ({ ...prev, [id]: rows }));
+      return rows;
+    } catch (_) { return []; }
+  }, [detailsByParent]);
+
   const toggleExpand = async (id) => {
     const next = expandedId === id ? null : id;
     setExpandedId(next);
     if (next) {
       const item = items.find(i => i.id === next);
-      if (item && statusOf(item) === "summary" && !detailsByParent[next]) {
-        try {
-          const rows = await api.details(next);
-          setDetailsByParent(prev => ({ ...prev, [next]: rows }));
-        } catch (_) { /* ignore */ }
-      }
+      if (item && statusOf(item) === "summary") loadDetailsFor(next);
+    }
+  };
+
+  // Graph → list transition: expand summary AND auto-open its linked details.
+  const expandItemWithLinks = async (id) => {
+    setExpandedId(id);
+    const item = items.find(i => i.id === id);
+    if (!item) return;
+    if (statusOf(item) === "summary") {
+      const rows = await loadDetailsFor(id);
+      const ids = (rows || []).map(r => r.id);
+      setExpandedDetailIds(prev => {
+        const next = new Set(prev);
+        ids.forEach(x => next.add(x));
+        return next;
+      });
     }
   };
 
@@ -1149,21 +1257,24 @@ function MojoDashboard() {
     return true;
   });
 
-  const filtered = baseVisible.filter(i => {
+  const matchesFilters = (i) => {
     if (search && !`${i.title} ${i.content} ${(i.tags || []).join(" ")}`.toLowerCase().includes(search.toLowerCase())) return false;
-    if (selDomain && !i.domain.startsWith(selDomain)) return false;
-    if (selType && i.type !== selType) return false;
-    if (selSource && tierOf(i) !== selSource) return false;
-    if (selStatus) {
+    if (selDomains.size) {
+      const ok = [...selDomains].some(d => i.domain === d || i.domain.startsWith(d + "/"));
+      if (!ok) return false;
+    }
+    if (selTypes.size && !selTypes.has(i.type)) return false;
+    if (selSources.size && !selSources.has(tierOf(i))) return false;
+    if (selStatuses.size) {
       const st = statusOf(i);
-      if (selStatus === "unlinked") {
-        if (st !== "detail" || i.parent_id) return false;
-      } else if (st !== selStatus) {
-        return false;
-      }
+      const ok = [...selStatuses].some(s =>
+        s === "unlinked" ? (st === "detail" && !i.parent_id) : st === s
+      );
+      if (!ok) return false;
     }
     return true;
-  });
+  };
+  const filtered = baseVisible.filter(matchesFilters);
 
   const statusCounts = {
     summary:    active.filter(i => statusOf(i) === "summary").length,
@@ -1258,40 +1369,72 @@ function MojoDashboard() {
 
       <div style={{ display:"flex", height:"calc(100vh - 178px)" }}>
         {/* Sidebar */}
-        <div style={{ width:200, borderRight:"1px solid var(--border)", padding:"14px 0", flexShrink:0, overflowY:"auto" }}>
-          <div style={{ padding:"0 12px 10px", fontSize:9.5, color:"var(--text-faint)", textTransform:"uppercase", letterSpacing:"0.1em" }}>Domains</div>
-          <div onClick={() => setSelDomain(null)}
-            style={{ padding:"6px 12px", cursor:"pointer", fontSize:12.5, background: !selDomain ? "var(--accent-bg)" : "transparent", color: !selDomain ? "var(--accent)" : "var(--text-mid)", borderLeft: !selDomain ? "2px solid var(--accent)" : "2px solid transparent" }}>
+        <div style={{ width:210, borderRight:"1px solid var(--border)", padding:"14px 0", flexShrink:0, overflowY:"auto" }}>
+          <div style={{ padding:"0 12px 6px", fontSize:9.5, color:"var(--text-faint)", textTransform:"uppercase", letterSpacing:"0.1em", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+            <span>Domains</span>
+            {selDomains.size > 0 && (
+              <span onClick={() => setSelDomains(new Set())} style={{ cursor:"pointer", color:"var(--text-dim)", fontSize:9, textTransform:"none", letterSpacing:0 }}>clear</span>
+            )}
+          </div>
+          <div onClick={() => setSelDomains(new Set())}
+            style={{ padding:"6px 12px", cursor:"pointer", fontSize:12.5, background: selDomains.size === 0 ? "var(--accent-bg)" : "transparent", color: selDomains.size === 0 ? "var(--accent)" : "var(--text-mid)", borderLeft: selDomains.size === 0 ? "2px solid var(--accent)" : "2px solid transparent" }}>
             All ({active.length})
           </div>
-          {Object.entries(domainTree).sort().map(([d, info]) => (
-            <div key={d}>
-              <div onClick={() => setSelDomain(selDomain === d ? null : d)}
-                style={{ padding:"6px 12px", cursor:"pointer", fontSize:12, background: selDomain === d ? "var(--accent-bg)" : "transparent", color: selDomain === d ? "var(--accent)" : "var(--text-mid)", borderLeft: selDomain === d ? "2px solid var(--accent)" : "2px solid transparent", display:"flex", justifyContent:"space-between" }}>
-                <span>{d}</span><span style={{ fontSize:10, color:"var(--text-faint)" }}>{info.count}</span>
-              </div>
-              {Object.entries(info.subs).sort().map(([sub, cnt]) => (
-                <div key={sub} onClick={() => setSelDomain(selDomain === sub ? null : sub)}
-                  style={{ padding:"4px 12px 4px 24px", cursor:"pointer", fontSize:11, color: selDomain === sub ? "var(--accent)" : "var(--text-dim)", borderLeft: selDomain === sub ? "2px solid var(--accent)" : "2px solid transparent" }}>
-                  └ {sub.split("/").slice(2).join("/") || sub} ({cnt})
+          {Object.entries(domainTree).sort().map(([d, info]) => {
+            const selected = selDomains.has(d);
+            const subEntries = Object.entries(info.subs);
+            const hasSubs = subEntries.length > 0;
+            const expanded = expandedDomains.has(d);
+            return (
+              <div key={d}>
+                <div
+                  style={{ padding:"6px 12px", cursor:"pointer", fontSize:12, background: selected ? "var(--accent-bg)" : "transparent", color: selected ? "var(--accent)" : "var(--text-mid)", borderLeft: selected ? "2px solid var(--accent)" : "2px solid transparent", display:"flex", alignItems:"center", gap:4 }}>
+                  <span
+                    onClick={(e) => { e.stopPropagation(); if (hasSubs) toggleDomainExpand(d); }}
+                    style={{ width:12, display:"inline-block", textAlign:"center", color:"var(--text-faint)", cursor: hasSubs ? "pointer" : "default", userSelect:"none" }}
+                    title={hasSubs ? "toggle subtopics" : ""}
+                  >
+                    {hasSubs ? (expanded ? "▾" : "▸") : ""}
+                  </span>
+                  <span
+                    onClick={() => { toggleDomain(d); if (hasSubs && !expanded) toggleDomainExpand(d); }}
+                    style={{ flex:1, display:"flex", justifyContent:"space-between" }}>
+                    <span>{d}</span><span style={{ fontSize:10, color:"var(--text-faint)" }}>{info.count}</span>
+                  </span>
                 </div>
-              ))}
-            </div>
-          ))}
+                {expanded && subEntries.sort().map(([sub, cnt]) => {
+                  const subSel = selDomains.has(sub);
+                  return (
+                    <div key={sub} onClick={() => toggleDomain(sub)}
+                      style={{ padding:"4px 12px 4px 30px", cursor:"pointer", fontSize:11, color: subSel ? "var(--accent)" : "var(--text-dim)", background: subSel ? "var(--accent-bg)" : "transparent", borderLeft: subSel ? "2px solid var(--accent)" : "2px solid transparent" }}>
+                      └ {sub.split("/").slice(2).join("/") || sub} ({cnt})
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })}
 
-          <div style={{ padding:"14px 12px 8px", fontSize:9.5, color:"var(--text-faint)", textTransform:"uppercase", letterSpacing:"0.1em", borderTop:"1px solid var(--border)", marginTop:10 }}>Types</div>
+          <div style={{ padding:"14px 12px 8px", fontSize:9.5, color:"var(--text-faint)", textTransform:"uppercase", letterSpacing:"0.1em", borderTop:"1px solid var(--border)", marginTop:10, display:"flex", justifyContent:"space-between" }}>
+            <span>Types</span>
+            {selTypes.size > 0 && <span onClick={() => setSelTypes(new Set())} style={{ cursor:"pointer", color:"var(--text-dim)", fontSize:9, textTransform:"none", letterSpacing:0 }}>clear</span>}
+          </div>
           {Object.entries(TYPES).map(([k, v]) => {
             const cnt = active.filter(i => i.type === k).length;
             if (!cnt) return null;
-            return <div key={k} onClick={() => setSelType(selType === k ? null : k)}
-              style={{ padding:"4px 12px", cursor:"pointer", fontSize:11.5, color: selType === k ? v.color : "var(--text-mid)", background: selType === k ? `${v.color}18` : "transparent", borderLeft: selType === k ? `2px solid ${v.color}` : "2px solid transparent", display:"flex", justifyContent:"space-between" }}>
+            const sel = selTypes.has(k);
+            return <div key={k} onClick={() => toggleType(k)}
+              style={{ padding:"4px 12px", cursor:"pointer", fontSize:11.5, color: sel ? v.color : "var(--text-mid)", background: sel ? `${v.color}18` : "transparent", borderLeft: sel ? `2px solid ${v.color}` : "2px solid transparent", display:"flex", justifyContent:"space-between" }}>
               <span>{v.icon} {v.label}</span><span style={{ fontSize:10, color:"var(--text-faint)" }}>{cnt}</span>
             </div>;
           })}
 
-          <div style={{ padding:"14px 12px 8px", fontSize:9.5, color:"var(--text-faint)", textTransform:"uppercase", letterSpacing:"0.1em", borderTop:"1px solid var(--border)", marginTop:10 }}>View</div>
-          <div onClick={() => setSelStatus(null)}
-            style={{ padding:"4px 12px", cursor:"pointer", fontSize:11.5, color: !selStatus ? "var(--accent)" : "var(--text-mid)", background: !selStatus ? "var(--accent-bg)" : "transparent", borderLeft: !selStatus ? "2px solid var(--accent)" : "2px solid transparent", display:"flex", justifyContent:"space-between" }}>
+          <div style={{ padding:"14px 12px 8px", fontSize:9.5, color:"var(--text-faint)", textTransform:"uppercase", letterSpacing:"0.1em", borderTop:"1px solid var(--border)", marginTop:10, display:"flex", justifyContent:"space-between" }}>
+            <span>View</span>
+            {selStatuses.size > 0 && <span onClick={() => setSelStatuses(new Set())} style={{ cursor:"pointer", color:"var(--text-dim)", fontSize:9, textTransform:"none", letterSpacing:0 }}>clear</span>}
+          </div>
+          <div onClick={() => setSelStatuses(new Set())}
+            style={{ padding:"4px 12px", cursor:"pointer", fontSize:11.5, color: selStatuses.size === 0 ? "var(--accent)" : "var(--text-mid)", background: selStatuses.size === 0 ? "var(--accent-bg)" : "transparent", borderLeft: selStatuses.size === 0 ? "2px solid var(--accent)" : "2px solid transparent", display:"flex", justifyContent:"space-between" }}>
             <span>All</span><span style={{ fontSize:10, color:"var(--text-faint)" }}>{active.length}</span>
           </div>
           {[
@@ -1302,25 +1445,30 @@ function MojoDashboard() {
           ].map(([k, label]) => {
             const cnt = statusCounts[k] || 0;
             const accent = k === "unlinked" ? "#D97706" : STATUS_META[k]?.color || "var(--accent)";
+            const sel = selStatuses.has(k);
             return (
-              <div key={k} onClick={() => setSelStatus(selStatus === k ? null : k)}
-                style={{ padding:"4px 12px", cursor:"pointer", fontSize:11.5, color: selStatus === k ? accent : "var(--text-mid)", background: selStatus === k ? `${accent}18` : "transparent", borderLeft: selStatus === k ? `2px solid ${accent}` : "2px solid transparent", display:"flex", justifyContent:"space-between", opacity: cnt === 0 ? 0.4 : 1 }}>
+              <div key={k} onClick={() => toggleStatus(k)}
+                style={{ padding:"4px 12px", cursor:"pointer", fontSize:11.5, color: sel ? accent : "var(--text-mid)", background: sel ? `${accent}18` : "transparent", borderLeft: sel ? `2px solid ${accent}` : "2px solid transparent", display:"flex", justifyContent:"space-between", opacity: cnt === 0 ? 0.4 : 1 }}>
                 <span>{label}</span><span style={{ fontSize:10, color:"var(--text-faint)" }}>{cnt}</span>
               </div>
             );
           })}
 
-          <div style={{ padding:"14px 12px 8px", fontSize:9.5, color:"var(--text-faint)", textTransform:"uppercase", letterSpacing:"0.1em", borderTop:"1px solid var(--border)", marginTop:10 }}>Knowledge Tiers</div>
-          <div onClick={() => setSelSource(null)}
-            style={{ padding:"4px 12px", cursor:"pointer", fontSize:11.5, color: !selSource ? "var(--accent)" : "var(--text-mid)", background: !selSource ? "var(--accent-bg)" : "transparent", borderLeft: !selSource ? "2px solid var(--accent)" : "2px solid transparent", display:"flex", justifyContent:"space-between" }}>
+          <div style={{ padding:"14px 12px 8px", fontSize:9.5, color:"var(--text-faint)", textTransform:"uppercase", letterSpacing:"0.1em", borderTop:"1px solid var(--border)", marginTop:10, display:"flex", justifyContent:"space-between" }}>
+            <span>Knowledge Tiers</span>
+            {selSources.size > 0 && <span onClick={() => setSelSources(new Set())} style={{ cursor:"pointer", color:"var(--text-dim)", fontSize:9, textTransform:"none", letterSpacing:0 }}>clear</span>}
+          </div>
+          <div onClick={() => setSelSources(new Set())}
+            style={{ padding:"4px 12px", cursor:"pointer", fontSize:11.5, color: selSources.size === 0 ? "var(--accent)" : "var(--text-mid)", background: selSources.size === 0 ? "var(--accent-bg)" : "transparent", borderLeft: selSources.size === 0 ? "2px solid var(--accent)" : "2px solid transparent", display:"flex", justifyContent:"space-between" }}>
             <span>All</span><span style={{ fontSize:10, color:"var(--text-faint)" }}>{active.length}</span>
           </div>
           {["T1","T2","T3"].map(k => {
             const t = TIERS[k];
             const cnt = tierCounts[k] || 0;
+            const sel = selSources.has(k);
             return (
-              <div key={k} onClick={() => setSelSource(selSource === k ? null : k)} title={t.long}
-                style={{ padding:"4px 12px", cursor:"pointer", fontSize:11.5, color: selSource === k ? t.color : "var(--text-mid)", background: selSource === k ? `${t.color}18` : "transparent", borderLeft: selSource === k ? `2px solid ${t.color}` : "2px solid transparent", display:"flex", justifyContent:"space-between", opacity: cnt === 0 ? 0.4 : 1 }}>
+              <div key={k} onClick={() => toggleSource(k)} title={t.long}
+                style={{ padding:"4px 12px", cursor:"pointer", fontSize:11.5, color: sel ? t.color : "var(--text-mid)", background: sel ? `${t.color}18` : "transparent", borderLeft: sel ? `2px solid ${t.color}` : "2px solid transparent", display:"flex", justifyContent:"space-between", opacity: cnt === 0 ? 0.4 : 1 }}>
                 <span>{k} · {t.label}</span><span style={{ fontSize:10, color:"var(--text-faint)" }}>{cnt}</span>
               </div>
             );
@@ -1336,17 +1484,25 @@ function MojoDashboard() {
                 style={{ width:"100%", padding:"9px 12px 9px 32px", borderRadius:7, border:"1px solid var(--border-strong)", background:"var(--card)", color:"var(--text-main)", fontSize:12.5, outline:"none", fontFamily:"'JetBrains Mono',monospace" }} />
               <span style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)", color:"var(--text-faint)", fontSize:13 }}>⌕</span>
             </div>
-            {(selDomain || selType || selSource || selStatus || search) && (
+            {(selDomains.size || selTypes.size || selSources.size || selStatuses.size || search) ? (
               <div style={{ display:"flex", gap:5, marginTop:8, flexWrap:"wrap", alignItems:"center" }}>
                 <span style={{ fontSize:10, color:"var(--text-dim)" }}>Filters:</span>
-                {selDomain && <span onClick={() => setSelDomain(null)} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:"var(--accent-bg)", color:"var(--accent)", cursor:"pointer" }}>{selDomain} ×</span>}
-                {selType && <span onClick={() => setSelType(null)} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:`${TYPES[selType]?.color}18`, color:TYPES[selType]?.color, cursor:"pointer" }}>{TYPES[selType]?.label} ×</span>}
-                {selSource && <span onClick={() => setSelSource(null)} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:`${TIERS[selSource]?.color}18`, color:TIERS[selSource]?.color, cursor:"pointer" }}>{selSource} · {TIERS[selSource]?.label} ×</span>}
-                {selStatus && <span onClick={() => setSelStatus(null)} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:"rgba(217,119,6,0.15)", color:"#D97706", cursor:"pointer" }}>{selStatus} ×</span>}
+                {[...selDomains].map(d => (
+                  <span key={`d-${d}`} onClick={() => toggleDomain(d)} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:"var(--accent-bg)", color:"var(--accent)", cursor:"pointer" }}>{d} ×</span>
+                ))}
+                {[...selTypes].map(t => (
+                  <span key={`t-${t}`} onClick={() => toggleType(t)} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:`${TYPES[t]?.color}18`, color:TYPES[t]?.color, cursor:"pointer" }}>{TYPES[t]?.label} ×</span>
+                ))}
+                {[...selSources].map(s => (
+                  <span key={`s-${s}`} onClick={() => toggleSource(s)} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:`${TIERS[s]?.color}18`, color:TIERS[s]?.color, cursor:"pointer" }}>{s} · {TIERS[s]?.label} ×</span>
+                ))}
+                {[...selStatuses].map(s => (
+                  <span key={`v-${s}`} onClick={() => toggleStatus(s)} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:"rgba(217,119,6,0.15)", color:"#D97706", cursor:"pointer" }}>{s} ×</span>
+                ))}
                 {search && <span onClick={() => setSearch("")} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:"var(--bar-track)", color:"var(--text-mid)", cursor:"pointer" }}>"{search}" ×</span>}
                 <span style={{ fontSize:10, color:"var(--text-faint)" }}>({filtered.length})</span>
               </div>
-            )}
+            ) : null}
           </div>
 
           {view === "graph" && (
@@ -1373,7 +1529,7 @@ function MojoDashboard() {
                   {structuring ? "Structuring…" : `🔄 Structure selected (${selDetailIds.size})`}
                 </button>
               )}
-              <button onClick={() => setSelStatus("unlinked")}
+              <button onClick={() => setSelStatuses(new Set(["unlinked"]))}
                 style={{ padding:"5px 12px", borderRadius:5, border:"1px solid rgba(217,119,6,0.35)", background:"transparent", color:"#D97706", fontSize:11, cursor:"pointer" }}>
                 Review →
               </button>
@@ -1404,6 +1560,8 @@ function MojoDashboard() {
                           selected={selDetailIds.has(item.id)}
                           onToggleSelect={toggleDetailSelect}
                           details={statusOf(item) === "summary" ? detailsByParent[item.id] : null}
+                          expandedDetailIds={expandedDetailIds}
+                          onToggleDetail={toggleDetailExpand}
                         />
                       ))}
                     </div>
@@ -1419,24 +1577,8 @@ function MojoDashboard() {
             ) : (
               <GraphView
                 items={active}
-                highlightedIds={new Set(
-                  active
-                    .filter(i => {
-                      if (search && !`${i.title} ${i.content} ${(i.tags || []).join(" ")}`.toLowerCase().includes(search.toLowerCase())) return false;
-                      if (selDomain && !i.domain.startsWith(selDomain)) return false;
-                      if (selType && i.type !== selType) return false;
-                      if (selSource && tierOf(i) !== selSource) return false;
-                      if (selStatus) {
-                        const st = statusOf(i);
-                        if (selStatus === "unlinked") {
-                          if (st !== "detail" || i.parent_id) return false;
-                        } else if (st !== selStatus) return false;
-                      }
-                      return true;
-                    })
-                    .map(i => i.id)
-                )}
-                onSelectNode={id => { setView("list"); setExpandedId(id); }}
+                highlightedIds={new Set(active.filter(matchesFilters).map(i => i.id))}
+                onSelectNode={id => { setView("list"); expandItemWithLinks(id); }}
                 onFillReasons={fillReasons}
                 fillLoading={fillingReasons}
                 onEdgeChange={refresh}
@@ -1450,8 +1592,18 @@ function MojoDashboard() {
       {showAdd && <AddModal onAdd={addItem} onClose={() => setShowAdd(false)} />}
 
       {toast && (
-        <div style={{ position:"fixed", bottom:20, left:"50%", transform:"translateX(-50%)", background:"var(--accent)", color:"#0b0b0b", padding:"8px 22px", borderRadius:7, fontSize:12.5, fontWeight:600, animation:"toastIn 0.25s ease", boxShadow:"0 8px 32px rgba(0,0,0,0.3)", zIndex:200 }}>
-          {toast}
+        <div style={{ position:"fixed", bottom:20, left:"50%", transform:"translateX(-50%)", background:"var(--accent)", color:"#0b0b0b", padding:"8px 14px 8px 22px", borderRadius:7, fontSize:12.5, fontWeight:600, animation:"toastIn 0.25s ease", boxShadow:"0 8px 32px rgba(0,0,0,0.3)", zIndex:200, display:"flex", alignItems:"center", gap:14, maxWidth:"90vw" }}>
+          <span style={{ whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{toast.msg}</span>
+          {toast.undo && (
+            <button
+              onClick={() => { const fn = toast.undo; setToast(null); if (toastTimerRef.current) clearTimeout(toastTimerRef.current); fn(); }}
+              style={{ background:"rgba(0,0,0,0.18)", border:"1px solid rgba(0,0,0,0.25)", color:"#0b0b0b", padding:"3px 10px", borderRadius:4, fontSize:11, fontWeight:700, cursor:"pointer", textTransform:"uppercase", letterSpacing:"0.06em" }}>
+              Undo
+            </button>
+          )}
+          <span
+            onClick={() => setToast(null)}
+            style={{ cursor:"pointer", color:"rgba(0,0,0,0.55)", fontSize:14, marginLeft:2, paddingLeft:4 }}>×</span>
         </div>
       )}
     </div>
