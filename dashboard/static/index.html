@@ -454,16 +454,17 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
       .attr("stroke", d => {
         if (d.type === "parent") return faintColor;
         if (d.type === "explicit") return accentColor;
-        return dimColor;
+        return accentColor;
       })
       .attr("stroke-width", d => {
         if (d.type === "parent") return 0.6;
-        if (d.type === "explicit") return 2;
-        return 1.2;
+        if (d.type === "explicit") return 2.2;
+        return 1.6;
       })
+      .attr("stroke-linecap", "round")
       .attr("stroke-dasharray", d => {
         if (d.type === "parent") return "1,3";
-        if (d.type === "implicit") return "3,4";
+        if (d.type === "implicit") return "4,3";
         return "none";
       });
 
@@ -699,8 +700,8 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
         return linkDimOpacity;
       }
       if (l.type === "parent") return 0.5;
-      if (l.type === "explicit") return 0.75;
-      return 0.4;
+      if (l.type === "explicit") return 0.85;
+      return 0.55;
     });
     resetNodeOpacity();
     resetLinkOpacity();
@@ -795,7 +796,8 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
       <div style={{ position:"absolute", bottom:8, left:8, right:8, display:"flex", alignItems:"center", gap:12, fontSize:10, color:"var(--text-dim)", flexWrap:"wrap", padding:"6px 10px", borderRadius:6, background:"var(--card)", border:"1px solid var(--border)", backdropFilter:"blur(4px)" }}>
         <span>● connected knowledge</span>
         <span>○ unlinked details (outer ring)</span>
-        <span><span style={{ display:"inline-block", width:20, height:2, background:"rgba(78,205,196,0.5)", verticalAlign:"middle", marginRight:4 }}/>related</span>
+        <span><span style={{ display:"inline-block", width:20, height:2, background:"var(--accent)", verticalAlign:"middle", marginRight:4 }}/>related</span>
+        <span><span style={{ display:"inline-block", width:20, height:0, borderTop:"2px dashed var(--accent)", opacity:0.55, verticalAlign:"middle", marginRight:4 }}/>shared tags</span>
         <span style={{ color:"var(--text-faint)" }}>hover edge to edit · shift+drag to connect</span>
         <div style={{ flex:1 }} />
         {noReasonCount > 0 && onFillReasons && (
