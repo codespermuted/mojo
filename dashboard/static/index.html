@@ -224,13 +224,14 @@ const TierBadge = ({ tier }) => {
 const STOP_TAGS = new Set(["git-extracted", "test", "e2e", "production"]);
 const IMPLICIT_SHARED_THRESHOLD = 2;
 
-function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoading }) {
+function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoading, onEdgeChange, flash }) {
   const svgRef = useRef(null);
   const hasFilter = highlightedIds && highlightedIds.size !== items.length;
 
   const noReasonCount = useMemo(() => {
     let missing = 0;
     items.forEach(it => {
+      if (statusOf(it) === "detail") return;
       const rels = it.related_ids || [];
       if (rels.length === 0) return;
       let reasons = it.related_reasoning || {};
@@ -244,64 +245,81 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
     return missing;
   }, [items]);
 
-  const { nodes, links, isolatedIds } = useMemo(() => {
+  const { nodes, links } = useMemo(() => {
     const ns = items.map(it => ({ ...it, x:0, y:0 }));
     const idSet = new Set(items.map(i => i.id));
     const ls = [];
     const seen = new Set();
-    const connected = new Set();
 
     items.forEach(it => {
-      let reasons = {};
-      const raw = it.related_reasoning;
-      if (raw && typeof raw === "object") {
-        reasons = raw;
-      } else if (typeof raw === "string" && raw) {
-        try { reasons = JSON.parse(raw); } catch (e) { reasons = {}; }
-      }
-      (it.related_ids || []).forEach(rid => {
-        if (idSet.has(rid)) {
-          const key = [it.id, rid].sort().join("-");
-          if (!seen.has(key)) {
-            seen.add(key);
-            ls.push({
-              source: it.id,
-              target: rid,
-              type: "explicit",
-              reasoning: reasons[rid] || "",
-            });
-            connected.add(it.id);
-            connected.add(rid);
-          }
+      // parent-child edge for linked details only
+      if (statusOf(it) === "detail" && it.parent_id && idSet.has(it.parent_id)) {
+        const key = `parent-${it.id}-${it.parent_id}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          ls.push({ source: it.id, target: it.parent_id, type: "parent" });
         }
-      });
+      }
+
+      // explicit edges from summary/standalone only
+      if (statusOf(it) !== "detail") {
+        let reasons = {};
+        const raw = it.related_reasoning;
+        if (raw && typeof raw === "object") {
+          reasons = raw;
+        } else if (typeof raw === "string" && raw) {
+          try { reasons = JSON.parse(raw); } catch (e) { reasons = {}; }
+        }
+        (it.related_ids || []).forEach(rid => {
+          if (idSet.has(rid)) {
+            const key = [it.id, rid].sort().join("-");
+            if (!seen.has(key)) {
+              seen.add(key);
+              ls.push({
+                source: it.id,
+                target: rid,
+                type: "explicit",
+                reasoning: reasons[rid] || "",
+              });
+            }
+          }
+        });
+      }
     });
 
-    for (let i = 0; i < items.length; i++) {
-      const tagsA = (items[i].tags || []).filter(t => !STOP_TAGS.has(t));
+    // implicit: summary/standalone only
+    const nonDetails = items.filter(i => statusOf(i) !== "detail");
+    for (let i = 0; i < nonDetails.length; i++) {
+      const tagsA = (nonDetails[i].tags || []).filter(t => !STOP_TAGS.has(t));
       if (tagsA.length === 0) continue;
-      for (let j = i + 1; j < items.length; j++) {
-        const tagsB = (items[j].tags || []).filter(t => !STOP_TAGS.has(t));
+      for (let j = i + 1; j < nonDetails.length; j++) {
+        const tagsB = (nonDetails[j].tags || []).filter(t => !STOP_TAGS.has(t));
         const shared = tagsA.filter(t => tagsB.includes(t));
         if (shared.length >= IMPLICIT_SHARED_THRESHOLD) {
-          const key = [items[i].id, items[j].id].sort().join("-");
+          const key = [nonDetails[i].id, nonDetails[j].id].sort().join("-");
           if (!seen.has(key)) {
             seen.add(key);
-            ls.push({ source:items[i].id, target:items[j].id, type:"implicit", shared });
-            connected.add(items[i].id);
-            connected.add(items[j].id);
+            ls.push({ source: nonDetails[i].id, target: nonDetails[j].id, type: "implicit", shared });
           }
         }
       }
     }
 
-    const isolated = new Set(items.filter(it => !connected.has(it.id)).map(it => it.id));
-    return { nodes: ns, links: ls, isolatedIds: isolated };
+    return { nodes: ns, links: ls };
   }, [items]);
+
+  // Latest refs for handlers so d3 closures stay fresh
+  const onEdgeChangeRef = useRef(onEdgeChange);
+  const flashRef = useRef(flash);
+  const onSelectNodeRef = useRef(onSelectNode);
+  useEffect(() => { onEdgeChangeRef.current = onEdgeChange; }, [onEdgeChange]);
+  useEffect(() => { flashRef.current = flash; }, [flash]);
+  useEffect(() => { onSelectNodeRef.current = onSelectNode; }, [onSelectNode]);
 
   useEffect(() => {
     if (!svgRef.current || nodes.length === 0) return;
     const svg = d3.select(svgRef.current);
+    svg.attr("tabindex", 0);
     const W = svgRef.current.clientWidth || 700;
     const H = svgRef.current.clientHeight || 500;
     svg.selectAll("*").remove();
@@ -310,142 +328,309 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
     const zoom = d3.zoom().scaleExtent([0.3, 3]).on("zoom", (e) => g.attr("transform", e.transform));
     svg.call(zoom);
 
-    // Pin isolated nodes to a strip along the bottom so they don't drift
-    // into the main cluster and dominate it.
-    const isolatedStripY = H - 50;
-    let isolatedIdx = 0;
-    const isolatedList = nodes.filter(n => isolatedIds.has(n.id));
-    isolatedList.forEach(n => {
-      n.fx = 40 + (isolatedIdx++) * 70 - (isolatedList.length * 35);
-      n.fx += W / 2;
-      n.fy = isolatedStripY;
-    });
+    const nodeRadius = d => {
+      if (statusOf(d) === "summary") return 18 + Math.min((d.detail_ids || []).length * 2, 8);
+      if (statusOf(d) === "standalone") return 14 + Math.min((d.usage_count || 0) * 2, 6);
+      return 7;
+    };
 
     const sim = d3.forceSimulation(nodes)
       .force("link", d3.forceLink(links).id(d => d.id)
-        .distance(d => d.type === "explicit" ? 90 : 140)
-        .strength(d => d.type === "explicit" ? 0.6 : 0.08))
-      .force("charge", d3.forceManyBody().strength(-180).distanceMax(420))
+        .distance(d => {
+          if (d.type === "parent") return 35;
+          if (d.type === "explicit") return 90;
+          return 140;
+        })
+        .strength(d => {
+          if (d.type === "parent") return 0.8;
+          if (d.type === "explicit") return 0.5;
+          return 0.08;
+        }))
+      .force("charge", d3.forceManyBody()
+        .strength(d => statusOf(d) === "detail" ? -20 : -180)
+        .distanceMax(420))
       .force("x", d3.forceX(W / 2).strength(0.08))
       .force("y", d3.forceY(H / 2 - 40).strength(0.08))
-      .force("center", d3.forceCenter(W/2, H/2 - 40))
-      .force("collision", d3.forceCollide().radius(36));
+      .force("center", d3.forceCenter(W / 2, H / 2))
+      .force("collision", d3.forceCollide()
+        .radius(d => statusOf(d) === "detail" ? 10 : 36));
 
     const labelColor = getComputedStyle(document.documentElement).getPropertyValue("--text-mid").trim() || "rgba(0,0,0,0.55)";
 
-    // Tooltip (HTML, positioned relative to the graph wrapper).
+    // Tooltip
     const wrapper = svgRef.current.parentNode;
-    // Clear any stale tooltip from a previous render.
     d3.select(wrapper).selectAll(".mojo-graph-tooltip").remove();
     const tooltip = d3.select(wrapper).append("div")
       .attr("class", "mojo-graph-tooltip")
       .style("position", "absolute")
-      .style("background", "rgba(20,20,24,0.96)")
+      .style("background", "rgba(20,20,24,0.95)")
       .style("border", "1px solid rgba(255,255,255,0.15)")
-      .style("border-radius", "6px")
-      .style("padding", "8px 12px")
+      .style("border-radius", "8px")
+      .style("padding", "10px 14px")
       .style("font-size", "11px")
-      .style("color", "rgba(255,255,255,0.9)")
+      .style("color", "rgba(255,255,255,0.85)")
       .style("line-height", "1.45")
-      .style("pointer-events", "none")
+      .style("pointer-events", "auto")
       .style("opacity", 0)
       .style("max-width", "320px")
       .style("z-index", 100)
       .style("transition", "opacity 0.15s");
 
-    const link = g.append("g").selectAll("line").data(links).join("line")
-      .attr("stroke", d => d.type === "explicit"
-        ? "rgba(78,205,196,0.5)"
-        : "rgba(255,255,255,0.06)")
-      .attr("stroke-width", d => d.type === "explicit" ? 2 : 0.6)
-      .attr("stroke-dasharray", d => d.type === "implicit" ? "3,4" : "none");
+    let tooltipTimeout = null;
+    tooltip
+      .on("mouseenter", () => clearTimeout(tooltipTimeout))
+      .on("mouseleave", () => {
+        tooltipTimeout = setTimeout(() => tooltip.style("opacity", 0), 200);
+      });
 
-    // Wide invisible hit area so thin lines are actually hoverable.
+    const escapeHtml = (s) => (s || "").replace(/[&<>"']/g, c => ({
+      "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;",
+    }[c]));
+
+    const link = g.append("g").selectAll("line").data(links).join("line")
+      .attr("stroke", d => {
+        if (d.type === "parent") return "rgba(255,255,255,0.08)";
+        if (d.type === "explicit") return "rgba(78,205,196,0.5)";
+        return "rgba(255,255,255,0.06)";
+      })
+      .attr("stroke-width", d => {
+        if (d.type === "parent") return 0.5;
+        if (d.type === "explicit") return 2;
+        return 0.6;
+      })
+      .attr("stroke-dasharray", d => {
+        if (d.type === "parent") return "1,3";
+        if (d.type === "implicit") return "3,4";
+        return "none";
+      });
+
     const linkHit = g.append("g").selectAll("line").data(links).join("line")
       .attr("stroke", "transparent")
       .attr("stroke-width", 14)
       .style("cursor", "pointer")
-      .on("mousemove", (e, d) => {
+      .on("mouseenter", (e, d) => {
+        clearTimeout(tooltipTimeout);
+        const sourceId = typeof d.source === "object" ? d.source.id : d.source;
+        const targetId = typeof d.target === "object" ? d.target.id : d.target;
+        const sourceTitle = typeof d.source === "object" ? (d.source.title || d.source.id) : sourceId;
+        const targetTitle = typeof d.target === "object" ? (d.target.title || d.target.id) : targetId;
+
         let html = "";
         if (d.type === "explicit") {
-          html = `<strong style="color:#4ECDC4">🔗 Related</strong><br/>${
-            d.reasoning
-              ? d.reasoning.replace(/</g, "&lt;")
-              : '<em style="color:rgba(255,255,255,0.45)">Click "Fill reasons" below to generate</em>'
-          }`;
+          const reason = d.reasoning
+            ? escapeHtml(d.reasoning)
+            : "<em style='opacity:0.5'>No reason yet</em>";
+          html = `
+            <div style="margin-bottom:8px">
+              <strong style="color:#4ECDC4">🔗 ${escapeHtml(sourceTitle)}</strong>
+              <span style="opacity:0.5">↔</span>
+              <strong style="color:#4ECDC4">${escapeHtml(targetTitle)}</strong>
+            </div>
+            <div style="margin-bottom:8px">${reason}</div>
+            <div style="display:flex;gap:6px">
+              <button class="edge-edit-btn" data-action="edit"
+                style="padding:3px 8px;border-radius:4px;border:1px solid rgba(78,205,196,0.3);
+                background:transparent;color:#4ECDC4;font-size:10px;cursor:pointer">
+                ✎ Edit reason
+              </button>
+              <button class="edge-edit-btn" data-action="delete"
+                style="padding:3px 8px;border-radius:4px;border:1px solid rgba(255,80,80,0.3);
+                background:transparent;color:rgba(255,80,80,0.8);font-size:10px;cursor:pointer">
+                ✕ Remove link
+              </button>
+            </div>
+          `;
         } else if (d.type === "implicit") {
-          const tags = (d.shared || []).map(t => `#${t}`).join(" ");
+          const tags = (d.shared || []).map(t => `#${escapeHtml(t)}`).join(" ");
           html = `<strong style="color:#FBBF24">🏷️ Shared tags</strong><br/>${tags}`;
+        } else if (d.type === "parent") {
+          html = `<strong>📎 Detail → Summary</strong>`;
         }
-        if (html) {
-          const rect = wrapper.getBoundingClientRect();
-          tooltip.html(html)
-            .style("left", (e.clientX - rect.left + 15) + "px")
-            .style("top", (e.clientY - rect.top - 10) + "px")
-            .style("opacity", 1);
+
+        const rect = wrapper.getBoundingClientRect();
+        tooltip.html(html)
+          .style("left", (e.clientX - rect.left + 15) + "px")
+          .style("top", (e.clientY - rect.top - 10) + "px")
+          .style("opacity", 1);
+
+        tooltip.selectAll(".edge-edit-btn").on("click", async function () {
+          const action = d3.select(this).attr("data-action");
+          tooltip.style("opacity", 0);
+          if (action === "delete") {
+            if (!confirm("Remove this connection?")) return;
+            await fetch(`/api/knowledge/${encodeURIComponent(sourceId)}/remove-related/${encodeURIComponent(targetId)}`, { method: "POST" });
+            flashRef.current && flashRef.current(`✕ Removed: ${sourceId} ↔ ${targetId}`);
+            onEdgeChangeRef.current && onEdgeChangeRef.current();
+          } else if (action === "edit") {
+            const newReason = prompt("Edit connection reason:", d.reasoning || "");
+            if (newReason === null) return;
+            await fetch(`/api/knowledge/${encodeURIComponent(sourceId)}/related-reasoning/${encodeURIComponent(targetId)}`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ reasoning: newReason }),
+            });
+            flashRef.current && flashRef.current(`✎ Updated reason: ${sourceId} ↔ ${targetId}`);
+            onEdgeChangeRef.current && onEdgeChangeRef.current();
+          }
+        });
+      })
+      .on("mouseleave", () => {
+        tooltipTimeout = setTimeout(() => tooltip.style("opacity", 0), 300);
+      });
+
+    // Shift-drag connection mode
+    let connectMode = false;
+    let connectSource = null;
+    let tempLine = null;
+
+    const handleKeydown = (e) => { if (e.key === "Shift") connectMode = true; };
+    const handleKeyup = (e) => {
+      if (e.key === "Shift") {
+        connectMode = false;
+        if (tempLine) { tempLine.remove(); tempLine = null; }
+        connectSource = null;
+      }
+    };
+    window.addEventListener("keydown", handleKeydown);
+    window.addEventListener("keyup", handleKeyup);
+
+    const drag = d3.drag()
+      .on("start", (e, d) => {
+        if (connectMode) {
+          connectSource = d;
+          tempLine = g.append("line")
+            .attr("stroke", "#4ECDC4")
+            .attr("stroke-width", 2)
+            .attr("stroke-dasharray", "4,4")
+            .attr("x1", d.x).attr("y1", d.y)
+            .attr("x2", d.x).attr("y2", d.y);
+        } else {
+          if (!e.active) sim.alphaTarget(0.3).restart();
+          d.fx = d.x; d.fy = d.y;
         }
       })
-      .on("mouseleave", () => tooltip.style("opacity", 0));
+      .on("drag", (e, d) => {
+        if (connectMode && tempLine) {
+          const [mx, my] = d3.pointer(e, g.node());
+          tempLine.attr("x2", mx).attr("y2", my);
+        } else {
+          d.fx = e.x; d.fy = e.y;
+        }
+      })
+      .on("end", async (e, d) => {
+        if (connectMode && connectSource) {
+          const [mx, my] = d3.pointer(e, g.node());
+          let closest = null;
+          let minDist = Infinity;
+          nodes.forEach(n => {
+            if (n.id === connectSource.id) return;
+            const dist = Math.hypot(n.x - mx, n.y - my);
+            if (dist < minDist && dist < 50) { minDist = dist; closest = n; }
+          });
+
+          if (tempLine) { tempLine.remove(); tempLine = null; }
+          const src = connectSource;
+          connectSource = null;
+
+          if (closest) {
+            if (statusOf(closest) === "detail" || statusOf(src) === "detail") {
+              flashRef.current && flashRef.current("Details can't have explicit connections");
+            } else {
+              const reason = prompt(`Why are "${src.title}" and "${closest.title}" related?`, "");
+              if (reason !== null) {
+                await fetch(`/api/knowledge/${encodeURIComponent(src.id)}/add-related/${encodeURIComponent(closest.id)}`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ reasoning: reason }),
+                });
+                flashRef.current && flashRef.current(`🔗 Connected: ${src.id} ↔ ${closest.id}`);
+                onEdgeChangeRef.current && onEdgeChangeRef.current();
+              }
+            }
+          }
+        } else {
+          if (!e.active) sim.alphaTarget(0);
+          d.fx = null; d.fy = null;
+        }
+      });
 
     const node = g.append("g").selectAll("g").data(nodes).join("g")
       .style("cursor", "pointer")
-      .call(d3.drag()
-        .on("start", (e, d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
-        .on("drag",  (e, d) => { d.fx = e.x; d.fy = e.y; })
-        .on("end",   (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }));
+      .call(drag);
+
+    node.append("circle")
+      .attr("r", nodeRadius)
+      .attr("fill", d => statusOf(d) === "detail"
+        ? "rgba(255,255,255,0.04)"
+        : ((GRADES[gradeOf(d)]?.color || "#999") + "30"))
+      .attr("stroke", d => statusOf(d) === "detail"
+        ? "rgba(255,255,255,0.15)"
+        : (TIERS[tierOf(d)]?.color || "#999"))
+      .attr("stroke-width", d => {
+        if (statusOf(d) === "detail") return 0.8;
+        return d.approved ? 2.4 : 1.4;
+      })
+      .attr("stroke-dasharray", d => {
+        if (statusOf(d) === "detail") return "2,2";
+        return d.approved ? "none" : "3,2";
+      });
+
+    node.append("text")
+      .text(d => statusOf(d) === "detail" ? "" : (TYPES[d.type]?.icon || "📄"))
+      .attr("text-anchor", "middle").attr("dy", "0.35em")
+      .style("font-size", d => statusOf(d) === "detail" ? "0" : "16px")
+      .style("pointer-events", "none");
+
+    node.append("text")
+      .attr("class", "node-label")
+      .text(d => statusOf(d) === "detail"
+        ? ""
+        : ((d.title || "").length > 25 ? d.title.slice(0, 23) + "…" : (d.title || "")))
+      .attr("dy", d => nodeRadius(d) + 14)
+      .attr("text-anchor", "middle")
+      .style("font-size", "11px")
+      .style("fill", labelColor)
+      .style("font-family", "'Outfit', sans-serif")
+      .style("pointer-events", "none");
+
+    node.filter(d => d.type === "anti_pattern" && statusOf(d) !== "detail").append("circle")
+      .attr("r", d => nodeRadius(d) + 4)
+      .attr("fill", "none").attr("stroke", "#FF6B6B30").attr("stroke-width", 3);
 
     const dimOpacity = 0.08;
     const linkDimOpacity = 0.03;
-    const isolatedBase = 0.45;
-    const explicitBase = 0.5;
-    const implicitBase = 0.06;
-    const isDimmed = d => hasFilter && highlightedIds && !highlightedIds.has(d.id);
+    const noFilter = !hasFilter;
 
-    const resetNodeOpacity = () => node.style("opacity", d => {
-      if (isDimmed(d)) return dimOpacity;
-      return isolatedIds.has(d.id) ? isolatedBase : 1;
-    });
+    const nodeOpacity = d => {
+      if (noFilter) return statusOf(d) === "detail" ? 0.5 : 1;
+      const matched = highlightedIds && highlightedIds.has(d.id);
+      if (!matched) return dimOpacity;
+      if (statusOf(d) === "detail") return 0.7;
+      return 1;
+    };
+
+    const resetNodeOpacity = () => node.style("opacity", nodeOpacity);
     const resetLinkOpacity = () => link.style("opacity", l => {
       const sid = typeof l.source === "object" ? l.source.id : l.source;
       const tid = typeof l.target === "object" ? l.target.id : l.target;
-      if (hasFilter && !(highlightedIds.has(sid) && highlightedIds.has(tid))) {
+      if (!noFilter && !(highlightedIds.has(sid) && highlightedIds.has(tid))) {
         return linkDimOpacity;
       }
-      return l.type === "explicit" ? explicitBase : implicitBase;
+      if (l.type === "parent") return 0.6;
+      if (l.type === "explicit") return 0.5;
+      return 0.06;
     });
     resetNodeOpacity();
     resetLinkOpacity();
 
-    const nodeRadius = d => {
-      const base = 14 + Math.min((d.usage_count || 0) * 2, 8);
-      const details = Array.isArray(d.detail_ids) ? d.detail_ids.length : 0;
-      return base + Math.min(details * 2, 8);
-    };
-
-    node.append("circle")
-      .attr("r", nodeRadius)
-      .attr("fill", d => (GRADES[gradeOf(d)]?.color || "#999") + "30")
-      .attr("stroke", d => TIERS[tierOf(d)]?.color || "#999")
-      .attr("stroke-width", d => d.approved ? 2.4 : 1.4)
-      .attr("stroke-dasharray", d => d.approved ? "none" : "3,2");
-
-    node.append("text")
-      .text(d => TYPES[d.type]?.icon || "📄")
-      .attr("text-anchor", "middle").attr("dy", "0.35em")
-      .style("font-size", "16px").style("pointer-events", "none");
-
-    node.append("text")
-      .text(d => (d.title || "").length > 25 ? d.title.slice(0, 23) + "…" : (d.title || ""))
-      .attr("dy", d => nodeRadius(d) + 14)
-      .attr("text-anchor", "middle")
-      .style("font-size", "11px").style("fill", labelColor)
-      .style("font-family", "'Outfit', sans-serif").style("pointer-events", "none");
-
-    node.filter(d => d.type === "anti_pattern").append("circle")
-      .attr("r", d => nodeRadius(d) + 4)
-      .attr("fill", "none").attr("stroke", "#FF6B6B30").attr("stroke-width", 3);
-
-    node.on("click", (e, d) => { e.stopPropagation(); onSelectNode(d.id); });
+    node.on("click", (e, d) => {
+      e.stopPropagation();
+      if (statusOf(d) === "detail" && d.parent_id) {
+        onSelectNodeRef.current && onSelectNodeRef.current(d.parent_id);
+      } else {
+        onSelectNodeRef.current && onSelectNodeRef.current(d.id);
+      }
+    });
 
     node.on("mouseenter", function (e, d) {
       const connected = new Set();
@@ -461,25 +646,22 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
         const tid = typeof l.target === "object" ? l.target.id : l.target;
         return sid === d.id || tid === d.id ? 1 : 0.05;
       });
-    }).on("mouseleave", () => {
+
+      if (statusOf(d) === "detail") {
+        d3.select(this).append("text")
+          .attr("class", "hover-label")
+          .attr("dy", nodeRadius(d) + 12)
+          .attr("text-anchor", "middle")
+          .style("font-size", "9px")
+          .style("fill", "rgba(255,255,255,0.65)")
+          .style("pointer-events", "none")
+          .text((d.title || "").length > 30 ? d.title.slice(0, 28) + "…" : (d.title || ""));
+      }
+    }).on("mouseleave", function () {
       resetNodeOpacity();
       resetLinkOpacity();
+      d3.select(this).selectAll(".hover-label").remove();
     });
-
-    // "Unlinked" label above isolated strip
-    if (isolatedList.length > 0) {
-      g.append("text")
-        .attr("x", W / 2)
-        .attr("y", isolatedStripY - 24)
-        .attr("text-anchor", "middle")
-        .style("font-size", "10px")
-        .style("font-family", "'Outfit', sans-serif")
-        .style("fill", labelColor)
-        .style("letter-spacing", "0.08em")
-        .style("text-transform", "uppercase")
-        .style("pointer-events", "none")
-        .text(`unlinked (${isolatedList.length})`);
-    }
 
     let fitted = false;
     const fit = () => {
@@ -490,7 +672,7 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
         if (!bbox.width || !bbox.height) return;
         const rawScale = 0.85 / Math.max(bbox.width / W, bbox.height / H);
         const nodeCount = nodes.length;
-        const minScale = nodeCount < 10 ? 1.2 : nodeCount < 20 ? 0.8 : 0.6;
+        const minScale = nodeCount < 10 ? 1.2 : nodeCount < 20 ? 0.8 : 0.5;
         const scale = Math.max(rawScale, minScale);
         const tx = W / 2 - scale * (bbox.x + bbox.width / 2);
         const ty = H / 2 - scale * (bbox.y + bbox.height / 2);
@@ -498,7 +680,7 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
           zoom.transform,
           d3.zoomIdentity.translate(tx, ty).scale(scale)
         );
-      } catch (_) { /* ignore if bbox not ready */ }
+      } catch (_) { /* ignore */ }
     };
 
     sim.on("tick", () => {
@@ -513,6 +695,8 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
 
     return () => {
       sim.stop();
+      window.removeEventListener("keydown", handleKeydown);
+      window.removeEventListener("keyup", handleKeyup);
       d3.select(wrapper).selectAll(".mojo-graph-tooltip").remove();
     };
   }, [nodes, links, hasFilter, highlightedIds]);
@@ -520,10 +704,11 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
   return (
     <div style={{ width:"100%", height:"100%", position:"relative" }}>
       <svg ref={svgRef} style={{ width:"100%", height:"100%", background:"var(--graph-bg)", borderRadius:8 }} />
-      <div style={{ position:"absolute", bottom:12, left:12, right:12, display:"flex", alignItems:"center", gap:12, fontSize:10, color:"var(--text-dim)" }}>
+      <div style={{ position:"absolute", bottom:12, left:12, right:12, display:"flex", alignItems:"center", gap:12, fontSize:10, color:"var(--text-dim)", flexWrap:"wrap" }}>
+        <span>● large = summaries & standalone</span>
+        <span>○ small = details</span>
         <span><span style={{ display:"inline-block", width:20, height:2, background:"rgba(78,205,196,0.5)", verticalAlign:"middle", marginRight:4 }}/>related</span>
-        <span><span style={{ display:"inline-block", width:20, height:0, borderTop:"2px dashed var(--border-strong)", verticalAlign:"middle", marginRight:4 }}/>shared tags</span>
-        <span style={{ color:"var(--text-faint)" }}>drag · scroll · hover to highlight</span>
+        <span style={{ color:"var(--text-faint)" }}>hover edge to edit/remove · shift+drag to connect</span>
         <div style={{ flex:1 }} />
         {noReasonCount > 0 && onFillReasons && (
           <button
@@ -1074,6 +1259,16 @@ function MojoDashboard() {
             )}
           </div>
 
+          {view === "graph" && (
+            <div style={{
+              fontSize:10, color:"var(--text-dim)",
+              padding:"6px 20px", borderBottom:"1px solid var(--border)",
+              letterSpacing:"0.04em",
+            }}>
+              ● large = summaries & standalone · ○ small = details · hover edge to edit/remove · shift+drag to connect
+            </div>
+          )}
+
           {/* Unlinked banner */}
           {statusCounts.unlinked > 0 && view === "list" && (
             <div style={{ padding:"10px 20px", borderBottom:"1px solid var(--border)", background:"rgba(217,119,6,0.08)", display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
@@ -1133,11 +1328,29 @@ function MojoDashboard() {
               </>
             ) : (
               <GraphView
-                items={active.filter(i => statusOf(i) !== "detail")}
-                highlightedIds={new Set(filtered.filter(i => statusOf(i) !== "detail").map(i => i.id))}
+                items={active}
+                highlightedIds={new Set(
+                  active
+                    .filter(i => {
+                      if (search && !`${i.title} ${i.content} ${(i.tags || []).join(" ")}`.toLowerCase().includes(search.toLowerCase())) return false;
+                      if (selDomain && !i.domain.startsWith(selDomain)) return false;
+                      if (selType && i.type !== selType) return false;
+                      if (selSource && tierOf(i) !== selSource) return false;
+                      if (selStatus) {
+                        const st = statusOf(i);
+                        if (selStatus === "unlinked") {
+                          if (st !== "detail" || i.parent_id) return false;
+                        } else if (st !== selStatus) return false;
+                      }
+                      return true;
+                    })
+                    .map(i => i.id)
+                )}
                 onSelectNode={id => { setView("list"); setExpandedId(id); }}
                 onFillReasons={fillReasons}
                 fillLoading={fillingReasons}
+                onEdgeChange={refresh}
+                flash={flash}
               />
             )}
           </div>

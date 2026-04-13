@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -231,6 +231,113 @@ def approve_knowledge(kid: str):
     finally:
         db.close()
     return _fetch_one(kid)
+
+
+@app.post("/api/knowledge/{kid}/add-related/{related_id}")
+async def add_related(kid: str, related_id: str, request: Request):
+    """두 항목 간 새 관계를 양방향으로 추가."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    reasoning = (body or {}).get("reasoning", "")
+
+    db = get_db()
+    try:
+        for item_id, target_id in [(kid, related_id), (related_id, kid)]:
+            row = db.execute(
+                "SELECT related_ids, related_reasoning FROM knowledge WHERE id = ?",
+                (item_id,),
+            ).fetchone()
+            if not row:
+                continue
+            r = dict(row)
+            try:
+                ids = json.loads(r["related_ids"] or "[]")
+            except (json.JSONDecodeError, TypeError):
+                ids = []
+            if target_id not in ids:
+                ids.append(target_id)
+            try:
+                reasons = json.loads(r["related_reasoning"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                reasons = {}
+            if reasoning:
+                reasons[target_id] = reasoning
+            db.execute(
+                "UPDATE knowledge SET related_ids = ?, related_reasoning = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(ids), json.dumps(reasons, ensure_ascii=False), datetime.now().isoformat(), item_id),
+            )
+        db.commit()
+    finally:
+        db.close()
+    return {"added": True, "source": kid, "target": related_id}
+
+
+@app.post("/api/knowledge/{kid}/remove-related/{related_id}")
+def remove_related(kid: str, related_id: str):
+    """두 항목 간 관계를 양방향으로 제거."""
+    db = get_db()
+    try:
+        for item_id, target_id in [(kid, related_id), (related_id, kid)]:
+            row = db.execute(
+                "SELECT related_ids, related_reasoning FROM knowledge WHERE id = ?",
+                (item_id,),
+            ).fetchone()
+            if not row:
+                continue
+            r = dict(row)
+            try:
+                ids = json.loads(r["related_ids"] or "[]")
+            except (json.JSONDecodeError, TypeError):
+                ids = []
+            if target_id in ids:
+                ids.remove(target_id)
+            try:
+                reasons = json.loads(r["related_reasoning"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                reasons = {}
+            reasons.pop(target_id, None)
+            db.execute(
+                "UPDATE knowledge SET related_ids = ?, related_reasoning = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(ids), json.dumps(reasons, ensure_ascii=False), datetime.now().isoformat(), item_id),
+            )
+        db.commit()
+    finally:
+        db.close()
+    return {"removed": True, "source": kid, "target": related_id}
+
+
+@app.put("/api/knowledge/{kid}/related-reasoning/{related_id}")
+async def update_related_reasoning(kid: str, related_id: str, request: Request):
+    """특정 관계의 reasoning을 수정."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    new_reason = (body or {}).get("reasoning", "")
+
+    db = get_db()
+    try:
+        row = db.execute(
+            "SELECT related_reasoning FROM knowledge WHERE id = ?", (kid,)
+        ).fetchone()
+        if not row:
+            db.close()
+            raise HTTPException(status_code=404, detail="not found")
+        try:
+            reasons = json.loads(dict(row)["related_reasoning"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            reasons = {}
+        reasons[related_id] = new_reason
+        db.execute(
+            "UPDATE knowledge SET related_reasoning = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(reasons, ensure_ascii=False), datetime.now().isoformat(), kid),
+        )
+        db.commit()
+    finally:
+        db.close()
+    return {"updated": True, "source": kid, "target": related_id, "reasoning": new_reason}
 
 
 @app.post("/api/knowledge/{kid}/archive")
