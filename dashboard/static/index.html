@@ -331,7 +331,8 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
     const nodeRadius = d => {
       if (statusOf(d) === "summary") return 18 + Math.min((d.detail_ids || []).length * 2, 8);
       if (statusOf(d) === "standalone") return 14 + Math.min((d.usage_count || 0) * 2, 6);
-      return 7;
+      if (d.parent_id) return 7;
+      return 10;
     };
 
     // Classify connected vs orphan
@@ -347,7 +348,7 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
     });
     const isOrphan = d => !connectedIds.has(d.id);
 
-    const orbitRadius = Math.min(W, H) * 0.38;
+    const orbitRadius = Math.min(W, H) * 0.32;
     const boundaryRadius = orbitRadius * 0.65;
 
     const sim = d3.forceSimulation(nodes)
@@ -608,16 +609,22 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
       .style("cursor", "pointer")
       .call(drag);
 
+    const accentColor = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#4ECDC4";
+
     node.append("circle")
       .attr("r", nodeRadius)
-      .attr("fill", d => statusOf(d) === "detail"
-        ? "rgba(255,255,255,0.04)"
-        : ((GRADES[gradeOf(d)]?.color || "#999") + "30"))
-      .attr("stroke", d => statusOf(d) === "detail"
-        ? "rgba(255,255,255,0.15)"
-        : (TIERS[tierOf(d)]?.color || "#999"))
+      .attr("fill", d => {
+        if (statusOf(d) !== "detail") return (GRADES[gradeOf(d)]?.color || "#999") + "30";
+        if (!d.parent_id) return accentColor + "10";
+        return "rgba(255,255,255,0.04)";
+      })
+      .attr("stroke", d => {
+        if (statusOf(d) !== "detail") return TIERS[tierOf(d)]?.color || "#999";
+        if (!d.parent_id) return accentColor + "80";
+        return "rgba(255,255,255,0.15)";
+      })
       .attr("stroke-width", d => {
-        if (statusOf(d) === "detail") return 0.8;
+        if (statusOf(d) === "detail") return d.parent_id ? 0.8 : 1.2;
         return d.approved ? 2.4 : 1.4;
       })
       .attr("stroke-dasharray", d => {
@@ -626,9 +633,17 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
       });
 
     node.append("text")
-      .text(d => statusOf(d) === "detail" ? "" : (TYPES[d.type]?.icon || "📄"))
+      .text(d => {
+        if (statusOf(d) !== "detail") return TYPES[d.type]?.icon || "📄";
+        if (!d.parent_id) return "·";
+        return "";
+      })
       .attr("text-anchor", "middle").attr("dy", "0.35em")
-      .style("font-size", d => statusOf(d) === "detail" ? "0" : "16px")
+      .style("font-size", d => {
+        if (statusOf(d) !== "detail") return "16px";
+        return d.parent_id ? "0" : "14px";
+      })
+      .style("fill", d => statusOf(d) === "detail" && !d.parent_id ? accentColor : "currentColor")
       .style("pointer-events", "none");
 
     node.append("text")
@@ -653,14 +668,14 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
 
     const nodeOpacity = d => {
       if (noFilter) {
-        if (isOrphan(d)) return 0.35;
-        if (statusOf(d) === "detail") return 0.5;
+        if (isOrphan(d)) return 0.55;
+        if (statusOf(d) === "detail") return 0.6;
         return 1;
       }
       const matched = highlightedIds && highlightedIds.has(d.id);
       if (!matched) return 0.05;
-      if (isOrphan(d)) return 0.6;
-      if (statusOf(d) === "detail") return 0.7;
+      if (isOrphan(d)) return 0.85;
+      if (statusOf(d) === "detail") return 0.8;
       return 1;
     };
 
