@@ -380,9 +380,10 @@ using heuristics and LLM calls; **outputs may be incomplete, incorrect,
 or out of date** and should always be reviewed before acting on them.
 
 The project is **not affiliated with, sponsored by, or endorsed by**
-Anthropic, Claude Code, or any of the open-source projects referenced in
-the demo section. All third-party names, logos, and trademarks belong to
-their respective owners and are used here for descriptive purposes only.
+Anthropic, Claude Code, Modular's [Mojo programming language](https://www.modular.com/mojo),
+or any of the open-source projects referenced in the demo section. All
+third-party names, logos, and trademarks belong to their respective owners
+and are used here for descriptive purposes only.
 
 You are responsible for ensuring that any use of Mojo complies with the
 license, privacy, and data-handling requirements of the systems it
