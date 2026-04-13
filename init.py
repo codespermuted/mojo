@@ -76,10 +76,11 @@ def init_mojo(skip_hooks: bool = False):
     console.print(Panel.fit(
         "[bold green]Mojo initialized![/bold green]\n\n"
         "Next steps:\n"
-        "  1. Import seed knowledge:  python import_seed.py seeds/seed_knowledge.json\n"
-        "  2. Sync to a project:      python -m serve.sync --project /path/to/project\n"
-        "  3. Start using Claude Code normally — knowledge accumulates automatically.\n"
-        "  4. Review extracted knowledge: (coming soon) mojo review",
+        "  1. Open the dashboard:     [cyan]mojo dashboard[/cyan]\n"
+        "  2. Seed a project (free):  [cyan]mojo scan git /path/to/project[/cyan]\n"
+        "  3. Sync into CLAUDE.md:    [cyan]mojo sync --project /path/to/project[/cyan]\n"
+        "  4. Review / approve items: [cyan]mojo review[/cyan]\n\n"
+        "Hooks run automatically on the next Claude Code session — no further setup needed.",
         border_style="green"
     ))
 

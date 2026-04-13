@@ -23,6 +23,7 @@ dependencies = [
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
 
 [project.scripts]
+mojo = "mojo_cli:main"
 mojo-extract = "extract.pipeline:main"
 mojo-sync = "serve.sync:main"
 
@@ -37,3 +38,4 @@ packages = ["extract", "serve", "hooks", "dashboard"]
 "review.py" = "review.py"
 "init.py" = "init.py"
 "import_seed.py" = "import_seed.py"
+"mojo_cli.py" = "mojo_cli.py"
