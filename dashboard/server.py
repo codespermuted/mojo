@@ -390,6 +390,119 @@ def structure_single(kid: str):
     return _structure_details([kid])
 
 
+@app.post("/api/knowledge/fill-reasoning")
+def fill_reasoning():
+    """Fill missing related_reasoning for existing related_ids pairs with Haiku.
+
+    Finds every non-archived item that has related_ids but empty/no
+    related_reasoning, then asks Haiku for one-sentence justifications.
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=400,
+            detail="ANTHROPIC_API_KEY not set. Export it before calling this endpoint.",
+        )
+
+    try:
+        import anthropic
+    except ImportError as e:
+        raise HTTPException(status_code=500, detail=f"anthropic SDK not installed: {e}")
+
+    client = anthropic.Anthropic()
+    db = get_db()
+    try:
+        rows = db.execute("""
+            SELECT id, title, content, domain, related_ids, related_reasoning
+              FROM knowledge
+             WHERE archived = 0
+               AND related_ids IS NOT NULL
+               AND related_ids != '[]'
+               AND related_ids != ''
+        """).fetchall()
+
+        filled = 0
+        total_cost = 0.0
+        errors: list[str] = []
+
+        for row in rows:
+            item = dict(row)
+            try:
+                rel_ids = json.loads(item["related_ids"] or "[]")
+            except (json.JSONDecodeError, TypeError):
+                rel_ids = []
+            try:
+                existing = json.loads(item["related_reasoning"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                existing = {}
+            missing = [rid for rid in rel_ids if rid and rid not in existing]
+            if not missing:
+                continue
+
+            placeholders = ",".join("?" * len(missing))
+            rel_rows = db.execute(
+                f"SELECT id, title, content FROM knowledge WHERE id IN ({placeholders})",
+                missing,
+            ).fetchall()
+            if not rel_rows:
+                continue
+
+            pairs_text = "\n".join(
+                f"- {r['id']}: {r['title']} — {(r['content'] or '')[:80]}"
+                for r in [dict(x) for x in rel_rows]
+            )
+            prompt = (
+                f'Given this knowledge item:\n"{item["title"]}": '
+                f'{(item["content"] or "")[:120]}\n\n'
+                f"And these related items:\n{pairs_text}\n\n"
+                'For each related item, write ONE short sentence (under 15 words) '
+                'explaining WHY they are related. '
+                'Return ONLY JSON {"item-id": "reason", ...}.'
+            )
+
+            try:
+                response = client.messages.create(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=400,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                text = response.content[0].text.strip()
+                if text.startswith("```"):
+                    text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+                reasons = json.loads(text)
+                if not isinstance(reasons, dict):
+                    raise ValueError("not a dict")
+            except Exception as e:
+                errors.append(f"{item['id']}: {e}")
+                continue
+
+            merged = {**existing, **reasons}
+            db.execute(
+                "UPDATE knowledge SET related_reasoning = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(merged, ensure_ascii=False),
+                 datetime.now().isoformat(),
+                 item["id"]),
+            )
+
+            usage = response.usage
+            cost = (usage.input_tokens * 0.25 + usage.output_tokens * 1.25) / 1_000_000
+            total_cost += cost
+            log_extraction_cost(
+                db, item["id"], "filter", "haiku",
+                usage.input_tokens, usage.output_tokens, cost,
+            )
+            filled += 1
+
+        db.commit()
+        return {
+            "filled": filled,
+            "total_cost": round(total_cost, 6),
+            "errors": errors[:5],
+        }
+    finally:
+        db.close()
+
+
 @app.get("/api/knowledge/{kid}/details")
 def list_details(kid: str):
     _fetch_one(kid)
@@ -446,7 +559,10 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 @app.get("/")
 def root():
-    return FileResponse(str(STATIC_DIR / "index.html"))
+    return FileResponse(
+        str(STATIC_DIR / "index.html"),
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+    )
 
 
 def main():

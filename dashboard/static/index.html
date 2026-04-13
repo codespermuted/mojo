@@ -163,6 +163,12 @@ const api = {
     }),
   details: (id) =>
     fetch(`/api/knowledge/${encodeURIComponent(id)}/details`).then(r => r.json()),
+  fillReasoning: () =>
+    fetch(`/api/knowledge/fill-reasoning`, {method:"POST"}).then(async r => {
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
+      return data;
+    }),
 };
 
 // ─── Small components ────────────────────────────────────
@@ -218,9 +224,25 @@ const TierBadge = ({ tier }) => {
 const STOP_TAGS = new Set(["git-extracted", "test", "e2e", "production"]);
 const IMPLICIT_SHARED_THRESHOLD = 2;
 
-function GraphView({ items, highlightedIds, onSelectNode }) {
+function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoading }) {
   const svgRef = useRef(null);
   const hasFilter = highlightedIds && highlightedIds.size !== items.length;
+
+  const noReasonCount = useMemo(() => {
+    let missing = 0;
+    items.forEach(it => {
+      const rels = it.related_ids || [];
+      if (rels.length === 0) return;
+      let reasons = it.related_reasoning || {};
+      if (typeof reasons === "string") {
+        try { reasons = JSON.parse(reasons); } catch (_) { reasons = {}; }
+      }
+      rels.forEach(rid => {
+        if (!reasons[rid]) missing++;
+      });
+    });
+    return missing;
+  }, [items]);
 
   const { nodes, links, isolatedIds } = useMemo(() => {
     const ns = items.map(it => ({ ...it, x:0, y:0 }));
@@ -349,7 +371,7 @@ function GraphView({ items, highlightedIds, onSelectNode }) {
           html = `<strong style="color:#4ECDC4">🔗 Related</strong><br/>${
             d.reasoning
               ? d.reasoning.replace(/</g, "&lt;")
-              : '<span style="color:rgba(255,255,255,0.4)">(no reasoning provided)</span>'
+              : '<em style="color:rgba(255,255,255,0.45)">Click "Fill reasons" below to generate</em>'
           }`;
         } else if (d.type === "implicit") {
           const tags = (d.shared || []).map(t => `#${t}`).join(" ");
@@ -373,19 +395,26 @@ function GraphView({ items, highlightedIds, onSelectNode }) {
         .on("end",   (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }));
 
     const dimOpacity = 0.08;
+    const linkDimOpacity = 0.03;
     const isolatedBase = 0.45;
+    const explicitBase = 0.5;
+    const implicitBase = 0.06;
     const isDimmed = d => hasFilter && highlightedIds && !highlightedIds.has(d.id);
 
-    node.style("opacity", d => {
+    const resetNodeOpacity = () => node.style("opacity", d => {
       if (isDimmed(d)) return dimOpacity;
       return isolatedIds.has(d.id) ? isolatedBase : 1;
     });
-    link.style("opacity", l => {
-      if (!hasFilter) return 1;
+    const resetLinkOpacity = () => link.style("opacity", l => {
       const sid = typeof l.source === "object" ? l.source.id : l.source;
       const tid = typeof l.target === "object" ? l.target.id : l.target;
-      return (highlightedIds.has(sid) && highlightedIds.has(tid)) ? 1 : dimOpacity;
+      if (hasFilter && !(highlightedIds.has(sid) && highlightedIds.has(tid))) {
+        return linkDimOpacity;
+      }
+      return l.type === "explicit" ? explicitBase : implicitBase;
     });
+    resetNodeOpacity();
+    resetLinkOpacity();
 
     const nodeRadius = d => {
       const base = 14 + Math.min((d.usage_count || 0) * 2, 8);
@@ -432,7 +461,10 @@ function GraphView({ items, highlightedIds, onSelectNode }) {
         const tid = typeof l.target === "object" ? l.target.id : l.target;
         return sid === d.id || tid === d.id ? 1 : 0.05;
       });
-    }).on("mouseleave", () => { node.style("opacity", 1); link.style("opacity", 1); });
+    }).on("mouseleave", () => {
+      resetNodeOpacity();
+      resetLinkOpacity();
+    });
 
     // "Unlinked" label above isolated strip
     if (isolatedList.length > 0) {
@@ -488,10 +520,26 @@ function GraphView({ items, highlightedIds, onSelectNode }) {
   return (
     <div style={{ width:"100%", height:"100%", position:"relative" }}>
       <svg ref={svgRef} style={{ width:"100%", height:"100%", background:"var(--graph-bg)", borderRadius:8 }} />
-      <div style={{ position:"absolute", bottom:12, left:12, display:"flex", gap:12, fontSize:10, color:"var(--text-dim)" }}>
+      <div style={{ position:"absolute", bottom:12, left:12, right:12, display:"flex", alignItems:"center", gap:12, fontSize:10, color:"var(--text-dim)" }}>
         <span><span style={{ display:"inline-block", width:20, height:2, background:"rgba(78,205,196,0.5)", verticalAlign:"middle", marginRight:4 }}/>related</span>
         <span><span style={{ display:"inline-block", width:20, height:0, borderTop:"2px dashed var(--border-strong)", verticalAlign:"middle", marginRight:4 }}/>shared tags</span>
-        <span style={{ color:"var(--text-faint)" }}>drag nodes · scroll to zoom · hover to highlight</span>
+        <span style={{ color:"var(--text-faint)" }}>drag · scroll · hover to highlight</span>
+        <div style={{ flex:1 }} />
+        {noReasonCount > 0 && onFillReasons && (
+          <button
+            disabled={fillLoading}
+            onClick={() => onFillReasons()}
+            style={{
+              padding:"4px 10px", borderRadius:4, fontSize:10,
+              border:"1px solid var(--border-strong)",
+              background:"transparent", color:"var(--text-mid)",
+              cursor: fillLoading ? "wait" : "pointer",
+            }}
+            title="Generate one-sentence reasons for related edges using Haiku"
+          >
+            {fillLoading ? "Filling…" : `Fill ${noReasonCount} missing reasons (Haiku, ~$${(noReasonCount * 0.0003).toFixed(3)})`}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -616,6 +664,9 @@ function KCard({
         borderRadius:8, padding:"12px 14px",
         cursor: editing ? "default" : "pointer", transition:"background 0.15s",
         opacity: isDetail ? 0.92 : 1,
+        overflow: "visible",
+        wordBreak: "break-word",
+        overflowWrap: "break-word",
       }}
       onMouseEnter={e => { if (!editing) e.currentTarget.style.background = "var(--card-hover)"; }}
       onMouseLeave={e => { e.currentTarget.style.background = item.approved ? "var(--card)" : "var(--card-pending)"; }}
@@ -665,18 +716,18 @@ function KCard({
             </div>
           ) : (
             <>
-              <p style={{ margin:"0 0 6px", fontSize:12.5, color:"var(--text-main)", lineHeight:1.55, fontFamily:"'JetBrains Mono',monospace", whiteSpace:"pre-wrap" }}>{item.content}</p>
-              {item.reasoning && <p style={{ margin:"0 0 8px", fontSize:11.5, color:"var(--text-mid)", lineHeight:1.45, fontStyle:"italic", borderLeft:"2px solid var(--border-strong)", paddingLeft:9 }}>{item.reasoning}</p>}
+              <p style={{ margin:"0 0 6px", fontSize:12.5, color:"var(--text-main)", lineHeight:1.55, fontFamily:"'JetBrains Mono',monospace", whiteSpace:"pre-wrap", wordBreak:"break-word", overflowWrap:"break-word" }}>{item.content}</p>
+              {item.reasoning && <p style={{ margin:"0 0 8px", fontSize:11.5, color:"var(--text-mid)", lineHeight:1.45, fontStyle:"italic", borderLeft:"2px solid var(--border-strong)", paddingLeft:9, wordBreak:"break-word", overflowWrap:"break-word", whiteSpace:"pre-wrap" }}>{item.reasoning}</p>}
               <div style={{ display:"flex", flexWrap:"wrap", gap:3, marginBottom:8 }}>
                 {(item.tags || []).map(tag => <span key={tag} style={{ fontSize:9.5, padding:"1px 5px", borderRadius:3, background:"var(--bar-track)", color:"var(--text-mid)" }}>#{tag}</span>)}
               </div>
               {item.lineage && (
-                <div style={{ fontSize:10, color:"var(--text-faint)", marginBottom:4 }}>
+                <div style={{ fontSize:10, color:"var(--text-faint)", marginBottom:4, wordBreak:"break-word", overflowWrap:"break-word", whiteSpace:"normal" }}>
                   📍 Origin: {item.lineage.detail}
                 </div>
               )}
               {item.related_ids?.length > 0 && (
-                <div style={{ fontSize:10, color:"var(--text-faint)", marginBottom:8 }}>
+                <div style={{ fontSize:10, color:"var(--text-faint)", marginBottom:8, wordBreak:"break-word", overflowWrap:"break-word" }}>
                   🔗 related: {item.related_ids.join(", ")}
                 </div>
               )}
@@ -724,6 +775,7 @@ function MojoDashboard() {
   const [selDetailIds, setSelDetailIds] = useState(() => new Set());
   const [detailsByParent, setDetailsByParent] = useState({});
   const [structuring, setStructuring] = useState(false);
+  const [fillingReasons, setFillingReasons] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
   const [showArchived, setShowArchived] = useState(false);
   const [view, setView] = useState("list");
@@ -770,6 +822,19 @@ function MojoDashboard() {
     await api.update(id, { status: "standalone", parent_id: null });
     flash(`✎ Refined to standalone: ${id}`);
     refresh();
+  };
+
+  const fillReasons = async () => {
+    setFillingReasons(true);
+    try {
+      const res = await api.fillReasoning();
+      flash(`✓ Filled ${res.filled} edges ($${(res.total_cost || 0).toFixed(4)})`);
+      refresh();
+    } catch (err) {
+      flash(`✗ Fill failed: ${err.message}`);
+    } finally {
+      setFillingReasons(false);
+    }
   };
 
   const structureDetails = async (ids) => {
@@ -1071,6 +1136,8 @@ function MojoDashboard() {
                 items={active.filter(i => statusOf(i) !== "detail")}
                 highlightedIds={new Set(filtered.filter(i => statusOf(i) !== "detail").map(i => i.id))}
                 onSelectNode={id => { setView("list"); setExpandedId(id); }}
+                onFillReasons={fillReasons}
+                fillLoading={fillingReasons}
               />
             )}
           </div>
