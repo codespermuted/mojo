@@ -99,13 +99,19 @@ def _build_lineage(item: dict) -> dict:
 
 def _row_to_dict(row) -> dict:
     d = dict(row)
-    for field in ("related_ids", "tags"):
+    for field in ("related_ids", "tags", "detail_ids"):
         raw = d.get(field)
         if isinstance(raw, str):
             try:
                 d[field] = json.loads(raw)
             except (json.JSONDecodeError, TypeError):
                 d[field] = []
+    rr = d.get("related_reasoning")
+    if isinstance(rr, str):
+        try:
+            d["related_reasoning"] = json.loads(rr)
+        except (json.JSONDecodeError, TypeError):
+            d["related_reasoning"] = {}
     d["grade"] = evidence_based_grade(d)
     d["lineage"] = _build_lineage(d)
     return d

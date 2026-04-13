@@ -230,12 +230,24 @@ function GraphView({ items, highlightedIds, onSelectNode }) {
     const connected = new Set();
 
     items.forEach(it => {
+      let reasons = {};
+      const raw = it.related_reasoning;
+      if (raw && typeof raw === "object") {
+        reasons = raw;
+      } else if (typeof raw === "string" && raw) {
+        try { reasons = JSON.parse(raw); } catch (e) { reasons = {}; }
+      }
       (it.related_ids || []).forEach(rid => {
         if (idSet.has(rid)) {
           const key = [it.id, rid].sort().join("-");
           if (!seen.has(key)) {
             seen.add(key);
-            ls.push({ source:it.id, target:rid, type:"explicit" });
+            ls.push({
+              source: it.id,
+              target: rid,
+              type: "explicit",
+              reasoning: reasons[rid] || "",
+            });
             connected.add(it.id);
             connected.add(rid);
           }
@@ -289,13 +301,33 @@ function GraphView({ items, highlightedIds, onSelectNode }) {
 
     const sim = d3.forceSimulation(nodes)
       .force("link", d3.forceLink(links).id(d => d.id)
-        .distance(d => d.type === "explicit" ? 80 : 160)
-        .strength(d => d.type === "explicit" ? 0.7 : 0.08))
-      .force("charge", d3.forceManyBody().strength(-260))
+        .distance(d => d.type === "explicit" ? 120 : 180)
+        .strength(d => d.type === "explicit" ? 0.5 : 0.1))
+      .force("charge", d3.forceManyBody().strength(-400))
       .force("center", d3.forceCenter(W/2, H/2 - 40))
-      .force("collision", d3.forceCollide().radius(28));
+      .force("collision", d3.forceCollide().radius(40));
 
     const labelColor = getComputedStyle(document.documentElement).getPropertyValue("--text-mid").trim() || "rgba(0,0,0,0.55)";
+
+    // Tooltip (HTML, positioned relative to the graph wrapper).
+    const wrapper = svgRef.current.parentNode;
+    // Clear any stale tooltip from a previous render.
+    d3.select(wrapper).selectAll(".mojo-graph-tooltip").remove();
+    const tooltip = d3.select(wrapper).append("div")
+      .attr("class", "mojo-graph-tooltip")
+      .style("position", "absolute")
+      .style("background", "rgba(20,20,24,0.96)")
+      .style("border", "1px solid rgba(255,255,255,0.15)")
+      .style("border-radius", "6px")
+      .style("padding", "8px 12px")
+      .style("font-size", "11px")
+      .style("color", "rgba(255,255,255,0.9)")
+      .style("line-height", "1.45")
+      .style("pointer-events", "none")
+      .style("opacity", 0)
+      .style("max-width", "320px")
+      .style("z-index", 100)
+      .style("transition", "opacity 0.15s");
 
     const link = g.append("g").selectAll("line").data(links).join("line")
       .attr("stroke", d => d.type === "explicit"
@@ -303,6 +335,33 @@ function GraphView({ items, highlightedIds, onSelectNode }) {
         : "rgba(255,255,255,0.06)")
       .attr("stroke-width", d => d.type === "explicit" ? 2 : 0.6)
       .attr("stroke-dasharray", d => d.type === "implicit" ? "3,4" : "none");
+
+    // Wide invisible hit area so thin lines are actually hoverable.
+    const linkHit = g.append("g").selectAll("line").data(links).join("line")
+      .attr("stroke", "transparent")
+      .attr("stroke-width", 14)
+      .style("cursor", "pointer")
+      .on("mousemove", (e, d) => {
+        let html = "";
+        if (d.type === "explicit") {
+          html = `<strong style="color:#4ECDC4">🔗 Related</strong><br/>${
+            d.reasoning
+              ? d.reasoning.replace(/</g, "&lt;")
+              : '<span style="color:rgba(255,255,255,0.4)">(no reasoning provided)</span>'
+          }`;
+        } else if (d.type === "implicit") {
+          const tags = (d.shared || []).map(t => `#${t}`).join(" ");
+          html = `<strong style="color:#FBBF24">🏷️ Shared tags</strong><br/>${tags}`;
+        }
+        if (html) {
+          const rect = wrapper.getBoundingClientRect();
+          tooltip.html(html)
+            .style("left", (e.clientX - rect.left + 15) + "px")
+            .style("top", (e.clientY - rect.top - 10) + "px")
+            .style("opacity", 1);
+        }
+      })
+      .on("mouseleave", () => tooltip.style("opacity", 0));
 
     const node = g.append("g").selectAll("g").data(nodes).join("g")
       .style("cursor", "pointer")
@@ -326,27 +385,33 @@ function GraphView({ items, highlightedIds, onSelectNode }) {
       return (highlightedIds.has(sid) && highlightedIds.has(tid)) ? 1 : dimOpacity;
     });
 
+    const nodeRadius = d => {
+      const base = 14 + Math.min((d.usage_count || 0) * 2, 8);
+      const details = Array.isArray(d.detail_ids) ? d.detail_ids.length : 0;
+      return base + Math.min(details * 2, 8);
+    };
+
     node.append("circle")
-      .attr("r", d => 8 + Math.min((d.usage_count || 0) * 2, 10))
+      .attr("r", nodeRadius)
       .attr("fill", d => (GRADES[gradeOf(d)]?.color || "#999") + "30")
       .attr("stroke", d => TIERS[tierOf(d)]?.color || "#999")
-      .attr("stroke-width", d => d.approved ? 2.2 : 1.2)
+      .attr("stroke-width", d => d.approved ? 2.4 : 1.4)
       .attr("stroke-dasharray", d => d.approved ? "none" : "3,2");
 
     node.append("text")
       .text(d => TYPES[d.type]?.icon || "📄")
       .attr("text-anchor", "middle").attr("dy", "0.35em")
-      .style("font-size", "12px").style("pointer-events", "none");
+      .style("font-size", "16px").style("pointer-events", "none");
 
     node.append("text")
-      .text(d => (d.title || "").length > 20 ? d.title.slice(0, 18) + "…" : (d.title || ""))
-      .attr("dy", d => 8 + Math.min((d.usage_count || 0) * 2, 10) + 14)
+      .text(d => (d.title || "").length > 25 ? d.title.slice(0, 23) + "…" : (d.title || ""))
+      .attr("dy", d => nodeRadius(d) + 14)
       .attr("text-anchor", "middle")
-      .style("font-size", "10px").style("fill", labelColor)
+      .style("font-size", "11px").style("fill", labelColor)
       .style("font-family", "'Outfit', sans-serif").style("pointer-events", "none");
 
     node.filter(d => d.type === "anti_pattern").append("circle")
-      .attr("r", d => 12 + Math.min((d.usage_count || 0) * 2, 10))
+      .attr("r", d => nodeRadius(d) + 4)
       .attr("fill", "none").attr("stroke", "#FF6B6B30").attr("stroke-width", 3);
 
     node.on("click", (e, d) => { e.stopPropagation(); onSelectNode(d.id); });
@@ -389,7 +454,10 @@ function GraphView({ items, highlightedIds, onSelectNode }) {
       try {
         const bbox = g.node().getBBox();
         if (!bbox.width || !bbox.height) return;
-        const scale = 0.85 / Math.max(bbox.width / W, bbox.height / H);
+        const rawScale = 0.85 / Math.max(bbox.width / W, bbox.height / H);
+        const nodeCount = nodes.length;
+        const minScale = nodeCount < 10 ? 1.2 : nodeCount < 20 ? 0.8 : 0.6;
+        const scale = Math.max(rawScale, minScale);
         const tx = W / 2 - scale * (bbox.x + bbox.width / 2);
         const ty = H / 2 - scale * (bbox.y + bbox.height / 2);
         svg.transition().duration(750).call(
@@ -402,12 +470,17 @@ function GraphView({ items, highlightedIds, onSelectNode }) {
     sim.on("tick", () => {
       link.attr("x1", d => d.source.x).attr("y1", d => d.source.y)
           .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
+      linkHit.attr("x1", d => d.source.x).attr("y1", d => d.source.y)
+             .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
       node.attr("transform", d => `translate(${d.x},${d.y})`);
       if (!fitted && sim.alpha() < 0.1) fit();
     });
     sim.on("end", fit);
 
-    return () => sim.stop();
+    return () => {
+      sim.stop();
+      d3.select(wrapper).selectAll(".mojo-graph-tooltip").remove();
+    };
   }, [nodes, links, hasFilter, highlightedIds]);
 
   return (
