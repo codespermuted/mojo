@@ -1,9 +1,40 @@
 """Main extraction pipeline: Session JSONL → Structured knowledge."""
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Optional
+
+
+def _load_dotenv() -> None:
+    """Load ANTHROPIC_API_KEY (and friends) from a local .env if present.
+
+    Looks for .env in the current working directory and then walks up to
+    the project root. Does not override variables already set in the
+    environment. Minimal parser — no python-dotenv dependency.
+    """
+    seen: set[Path] = set()
+    for base in (Path.cwd(), Path(__file__).resolve().parent.parent):
+        candidate = base / ".env"
+        if candidate in seen or not candidate.exists():
+            continue
+        seen.add(candidate)
+        try:
+            for line in candidate.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                key = key.strip()
+                val = val.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = val
+        except OSError:
+            pass
+
+
+_load_dotenv()
 
 import anthropic
 from rich.console import Console
@@ -210,17 +241,21 @@ def extract_session(session_path: str, session_id: str,
     return extracted
 
 
-def extract_pending(dry_run: bool = False):
-    """Extract all pending sessions."""
+def extract_pending(dry_run: bool = False, project_path: str | None = None):
+    """Extract all pending sessions, optionally scoped to one project."""
     db = get_db()
-    pending = get_pending_sessions(db)
+    pending = get_pending_sessions(db, project_path=project_path)
     db.close()
 
     if not pending:
-        console.print("[dim]No pending sessions.[/dim]")
+        scope = f" for {project_path}" if project_path else ""
+        console.print(f"[dim]No pending sessions{scope}.[/dim]")
         return
 
-    console.print(f"[bold]Processing {len(pending)} pending session(s)...[/bold]")
+    scope = f" (project: {project_path})" if project_path else ""
+    console.print(
+        f"[bold]Processing {len(pending)} pending session(s){scope}...[/bold]"
+    )
 
     total_extracted = 0
     for session in pending:
@@ -256,13 +291,24 @@ def main():
     parser.add_argument("--session", help="Extract specific session by path")
     parser.add_argument("--session-id", help="Session ID (used with --session)")
     parser.add_argument("--dry-run", action="store_true", help="Skip LLM calls")
+    parser.add_argument(
+        "--project", "-p",
+        help="Only extract sessions belonging to this project path "
+             "(defaults to the current working directory). Use '--project all' "
+             "to process every pending session across projects.",
+    )
     args = parser.parse_args()
 
     if args.session:
         sid = args.session_id or Path(args.session).stem
         extract_session(args.session, sid, dry_run=args.dry_run)
+        return
+
+    if args.project and args.project.lower() == "all":
+        project_path: str | None = None
     else:
-        extract_pending(dry_run=args.dry_run)
+        project_path = args.project or str(Path.cwd())
+    extract_pending(dry_run=args.dry_run, project_path=project_path)
 
 
 if __name__ == "__main__":

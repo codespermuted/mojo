@@ -215,10 +215,32 @@ def get_all_knowledge(db: sqlite3.Connection,
     return [_row_to_dict(r) for r in rows]
 
 
-def get_pending_sessions(db: sqlite3.Connection) -> list[dict]:
-    """Get sessions not yet extracted."""
+def get_pending_sessions(db: sqlite3.Connection,
+                         project_path: str | None = None) -> list[dict]:
+    """Get sessions not yet extracted.
+
+    If ``project_path`` is given, return only sessions belonging to that
+    project. A session's stored ``project_path`` can be either the project's
+    absolute filesystem path (set by the SessionEnd hook from ``cwd``) or
+    Claude Code's per-project directory under ``~/.claude/projects/`` using
+    its encoded form (set by ``scan.py``). We match both shapes.
+    """
+    if project_path is None:
+        rows = db.execute(
+            "SELECT * FROM raw_sessions WHERE extracted = 0 ORDER BY created_at"
+        ).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+    abs_path = str(Path(project_path).expanduser().resolve())
+    encoded = abs_path.replace("/", "-")  # Claude Code's encoding
     rows = db.execute(
-        "SELECT * FROM raw_sessions WHERE extracted = 0 ORDER BY created_at"
+        """
+        SELECT * FROM raw_sessions
+        WHERE extracted = 0
+          AND (project_path = ? OR project_path LIKE ?)
+        ORDER BY created_at
+        """,
+        (abs_path, f"%{encoded}%"),
     ).fetchall()
     return [_row_to_dict(r) for r in rows]
 
