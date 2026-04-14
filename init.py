@@ -73,26 +73,23 @@ def init_mojo(skip_hooks: bool = False):
 
     # 5. Register hooks in Claude Code settings
     if not skip_hooks:
-        registered, settings_path = register_claude_hooks()
+        registered, settings_path, replaced = register_claude_hooks()
         if registered:
+            note = " (replaced stale entry)" if replaced else ""
             console.print(
                 f"[green]✓[/green] Claude Code hooks registered in "
-                f"[dim]{settings_path}[/dim]"
+                f"[dim]{settings_path}[/dim]{note}"
             )
-            # Warn loudly when a per-project sidecar ends up writing
-            # its `MOJO_HOME=...` into the *global* settings.json —
-            # that means every Claude Code session on this machine,
-            # regardless of cwd, will try to push transcripts into
-            # this project's store. It's almost never what the user
-            # wants with `MOJO_HOME=./.mojo mojo init`.
+            # With runtime cwd-based resolution (hooks/_resolve.py) a
+            # per-project sidecar no longer hijacks sessions from
+            # unrelated projects. Reassure the user on the sidecar
+            # path instead of warning.
             if MOJO_DIR.resolve() != default_home.resolve():
                 console.print(
-                    "[yellow]  ⚠ Per-project MOJO_HOME was hard-coded "
-                    "into the global settings.json above.[/yellow]\n"
-                    "[dim]    Every Claude Code session on this machine "
-                    "will now write to this sidecar store until you\n"
-                    "    re-run `mojo init` from a different project or "
-                    "remove the hook entry manually.[/dim]"
+                    "[dim]  Per-project sidecar: the hook script auto-detects "
+                    "`.mojo/` by walking up from\n  the session's cwd, so "
+                    "sessions in other projects fall back to the global "
+                    "store.[/dim]"
                 )
         else:
             console.print(
@@ -116,83 +113,85 @@ def init_mojo(skip_hooks: bool = False):
     ))
 
 
-def register_claude_hooks() -> tuple[bool, Path]:
+def register_claude_hooks() -> tuple[bool, Path, bool]:
     """Register Mojo hooks in Claude Code's global settings.json.
 
-    Returns ``(registered, settings_path)`` so the caller can tell the
-    user exactly which file it touched. Always the *global*
-    ``~/.claude/settings.json`` today — see the caller's warning for
-    the per-project sidecar gotcha this creates.
+    Returns ``(registered, settings_path, replaced)``. ``replaced`` is
+    True when a previous mojo entry was found and overwritten — useful
+    for telling the user that an older install's hook path was cleaned
+    up.
+
+    The registered command deliberately does **not** bake a
+    ``MOJO_HOME=...`` prefix into the shell command any more. The hook
+    script itself resolves the target ``mojo.db`` at runtime from the
+    session's ``cwd`` (see ``hooks/_resolve.py``), so one global
+    registration cleanly covers both the default store and any
+    per-project ``.mojo`` sidecars without cross-project bleed.
     """
-    # Claude Code global settings
     settings_path = Path.home() / ".claude" / "settings.json"
 
     if not settings_path.parent.exists():
         console.print("[dim]  ~/.claude not found — Claude Code not installed?[/dim]")
-        return False, settings_path
+        return False, settings_path, False
 
-    # Load existing settings
-    settings = {}
+    settings: dict = {}
     if settings_path.exists():
         try:
             settings = json.loads(settings_path.read_text())
         except json.JSONDecodeError:
             settings = {}
 
-    # Add hooks (preserve existing)
     hooks = settings.get("hooks", {})
-
     hooks_base = str(MOJO_DIR / "hooks")
 
-    # If MOJO_HOME is custom, prepend env var to hook commands
-    mojo_home_str = str(MOJO_DIR)
-    default_home = str(Path.home() / ".mojo")
-    env_prefix = f"MOJO_HOME={mojo_home_str} " if mojo_home_str != default_home else ""
-
-    # SessionEnd hook
-    session_end_hooks = hooks.get("SessionEnd", [])
-    mojo_session_hook = {
-        "matcher": "",
-        "hooks": [{
-            "type": "command",
-            "command": f"{env_prefix}python3 {hooks_base}/on_session_end.py"
-        }]
-    }
-
-    # Check if already registered
-    already_has_session = any(
-        "mojo" in json.dumps(h).lower() or "on_session_end" in json.dumps(h)
-        for h in session_end_hooks
+    replaced = _replace_mojo_entry(
+        hooks, event="SessionEnd",
+        script_name="on_session_end.py", hooks_base=hooks_base,
     )
-    if not already_has_session:
-        session_end_hooks.append(mojo_session_hook)
-    hooks["SessionEnd"] = session_end_hooks
-
-    # Stop hook
-    stop_hooks = hooks.get("Stop", [])
-    mojo_stop_hook = {
-        "matcher": "",
-        "hooks": [{
-            "type": "command",
-            "command": f"{env_prefix}python3 {hooks_base}/on_stop.py"
-        }]
-    }
-    already_has_stop = any(
-        "mojo" in json.dumps(h).lower() or "on_stop" in json.dumps(h)
-        for h in stop_hooks
+    replaced |= _replace_mojo_entry(
+        hooks, event="Stop",
+        script_name="on_stop.py", hooks_base=hooks_base,
     )
-    if not already_has_stop:
-        stop_hooks.append(mojo_stop_hook)
-    hooks["Stop"] = stop_hooks
 
     settings["hooks"] = hooks
 
-    # Write back
     settings_path.write_text(
         json.dumps(settings, indent=2, ensure_ascii=False),
-        encoding="utf-8"
+        encoding="utf-8",
     )
-    return True, settings_path
+    return True, settings_path, replaced
+
+
+def _replace_mojo_entry(hooks: dict, *, event: str, script_name: str,
+                        hooks_base: str) -> bool:
+    """Ensure exactly one mojo entry exists for ``event``.
+
+    Any pre-existing mojo entry (identified by the presence of
+    ``mojo`` or the hook's script name in its JSON form) is stripped
+    first. This prevents a re-init from a different ``MOJO_HOME`` —
+    or an old install that baked ``MOJO_HOME=...`` into the command
+    string — from leaving behind a stale hook path in settings.json.
+    Returns True iff a prior entry was found and dropped.
+    """
+    event_list = hooks.get(event, [])
+    filtered = []
+    dropped = False
+    for entry in event_list:
+        blob = json.dumps(entry).lower()
+        if script_name in blob or "mojo" in blob:
+            dropped = True
+            continue
+        filtered.append(entry)
+
+    filtered.append({
+        "matcher": "",
+        "hooks": [{
+            "type": "command",
+            "command": f"python3 {hooks_base}/{script_name}",
+        }],
+    })
+    hooks[event] = filtered
+    return dropped
 
 
 def main():
