@@ -59,6 +59,8 @@ CREATE TABLE IF NOT EXISTS extraction_costs (
     model TEXT NOT NULL,
     input_tokens INTEGER,
     output_tokens INTEGER,
+    cache_read_input_tokens INTEGER DEFAULT 0,
+    cache_creation_input_tokens INTEGER DEFAULT 0,
     cost_usd REAL,
     created_at TEXT DEFAULT (datetime('now'))
 );

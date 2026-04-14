@@ -169,6 +169,14 @@ mojo dashboard
 export ANTHROPIC_API_KEY=sk-ant-...
 mojo extract
 
+# Cost-optimized variants (stack freely):
+mojo extract --batch            # Message Batches API (~50% off Sonnet, async)
+mojo extract --parallel 4       # Haiku filter across 4 sessions in parallel
+mojo extract --batch --parallel 4
+
+# Use Claude Code subscription quota instead of an API key
+MOJO_LLM_BACKEND=claude-code mojo extract
+
 # Inject graded knowledge into a project's CLAUDE.md (and SKILL.md)
 mojo sync --project ~/code/my-service --skill
 
@@ -353,6 +361,21 @@ with three structured candidates was:
 | Filter           | Haiku   | 1,049 / 283     | $0.0006     |
 | Structure × 3    | Sonnet  | 5,472 / 1,303   | $0.0360     |
 | **Session total**|         |                 | **$0.0370** |
+
+With the optimizations in the extraction pipeline, a typical session drops
+substantially below the baseline above:
+
+| Optimization                  | Mechanism                                          | Effect on session cost |
+|-------------------------------|----------------------------------------------------|------------------------|
+| **`try/finally` guard**       | Session is marked extracted even on crash          | Eliminates duplicate spend on retry |
+| **Prompt caching**            | Static system prompt → `cache_control: ephemeral`  | ~10–30% ↓ (more on multi-candidate sessions) |
+| **`--batch`**                 | Message Batches API for Sonnet structuring        | Additional **50% off** Sonnet stage |
+| **`--parallel N`**            | Async Haiku filter across sessions                 | Throughput ↑, no cost change |
+| **`MOJO_LLM_BACKEND=claude-code`** | Headless `claude -p` fallback                 | **$0 API cost** (uses Max plan quota) |
+
+`--batch` is async — the batch may take minutes to hours to complete.
+Prefer `--batch` for background/hook-triggered extraction and the default
+synchronous path when you want immediate results.
 
 ## Requirements
 

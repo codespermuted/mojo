@@ -125,6 +125,17 @@ def init_db(db_path: Optional[Path] = None):
             if col == "status":
                 status_added = True
 
+    # extraction_costs migrations: cache token tracking
+    cost_migrations = [
+        ("cache_read_input_tokens",     "INTEGER DEFAULT 0"),
+        ("cache_creation_input_tokens", "INTEGER DEFAULT 0"),
+    ]
+    for col, ddl in cost_migrations:
+        try:
+            db.execute(f"SELECT {col} FROM extraction_costs LIMIT 1")
+        except sqlite3.OperationalError:
+            db.execute(f"ALTER TABLE extraction_costs ADD COLUMN {col} {ddl}")
+
     # Backfill: reclassify git-scan rows as detail the first time the
     # column exists, OR if no detail rows exist yet at all (recovery from
     # an earlier migration that incorrectly kept them as standalone).
@@ -232,15 +243,23 @@ def get_pending_sessions(db: sqlite3.Connection,
         return [_row_to_dict(r) for r in rows]
 
     abs_path = str(Path(project_path).expanduser().resolve())
-    encoded = abs_path.replace("/", "-")  # Claude Code's encoding
+    # Claude Code encodes project paths by replacing "/" with "-".
+    # Leading slash → leading dash, so "/workspace/Desktop/mojo" becomes
+    # "-workspace-Desktop-mojo".
+    encoded = abs_path.replace("/", "-")
+    # The scan backfill stores the Claude Code per-project directory as
+    # ~/.claude/projects/<encoded>. Match it exactly — never as a LIKE
+    # substring, because sibling projects with prefix-shared names
+    # (e.g. "mojo" and "mojo-experiment") would otherwise bleed together.
+    scan_form = str(Path.home() / ".claude" / "projects" / encoded)
     rows = db.execute(
         """
         SELECT * FROM raw_sessions
         WHERE extracted = 0
-          AND (project_path = ? OR project_path LIKE ?)
+          AND project_path IN (?, ?)
         ORDER BY created_at
         """,
-        (abs_path, f"%{encoded}%"),
+        (abs_path, scan_form),
     ).fetchall()
     return [_row_to_dict(r) for r in rows]
 
@@ -278,12 +297,22 @@ def update_confidence(db: sqlite3.Connection, knowledge_id: str, delta: float):
 
 def log_extraction_cost(db: sqlite3.Connection, session_id: str,
                         stage: str, model: str,
-                        input_tokens: int, output_tokens: int, cost_usd: float):
-    """Log API cost for an extraction step."""
+                        input_tokens: int, output_tokens: int, cost_usd: float,
+                        cache_read_input_tokens: int = 0,
+                        cache_creation_input_tokens: int = 0):
+    """Log API cost for an extraction step (including cache tokens)."""
     db.execute("""
-        INSERT INTO extraction_costs (session_id, stage, model, input_tokens, output_tokens, cost_usd)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (session_id, stage, model, input_tokens, output_tokens, cost_usd))
+        INSERT INTO extraction_costs (
+            session_id, stage, model,
+            input_tokens, output_tokens,
+            cache_read_input_tokens, cache_creation_input_tokens,
+            cost_usd
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (session_id, stage, model,
+          input_tokens, output_tokens,
+          cache_read_input_tokens, cache_creation_input_tokens,
+          cost_usd))
     db.commit()
 
 
