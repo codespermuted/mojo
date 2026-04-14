@@ -123,13 +123,53 @@ mojo init
 # External drive / NAS
 export MOJO_HOME=/mnt/nas/mojo
 mojo init
-
-# Per-project isolation — keeps this project's knowledge out of the global store
-MOJO_HOME=./.mojo mojo init
 ```
 
 Once `mojo init` has run, hooks fire automatically on the next Claude Code
 session. No further setup is required.
+
+### Per-project isolation
+
+Run `mojo init` **once** globally — that registers the Claude Code
+hooks machine-wide. To scope a specific project's sessions to its
+own store, create a per-project `.mojo` sidecar next to the repo:
+
+```bash
+cd ~/code/my-service
+MOJO_HOME=./.mojo mojo init --skip-hooks   # creates ./.mojo/mojo.db
+echo ".mojo/" >> .gitignore
+```
+
+From then on, Claude Code sessions launched with a cwd inside
+`~/code/my-service` (or any subdirectory) write to
+`~/code/my-service/.mojo/mojo.db`. Sessions from any other cwd fall
+back to the global `~/.mojo/mojo.db`. The session hook walks up from
+the session's cwd looking for the nearest `.mojo/mojo.db`, so nested
+projects get their sessions routed to the innermost sidecar rather
+than the enclosing one.
+
+`--skip-hooks` matters: you've already registered the hooks globally
+in the first `mojo init`, and the runtime cwd-based resolution in
+`hooks/_resolve.py` is what makes the per-project routing work. A
+second global hook registration from inside the project would just
+churn `~/.claude/settings.json` without adding anything.
+
+> **Past sessions aren't auto-imported.** The hook captures only
+> *future* sessions. To backfill existing transcripts for a specific
+> project, run `mojo scan sessions --project /path/to/project` — it
+> defaults to the current working directory and only touches that
+> project's Claude Code transcript dir. Pass `--project all` to opt
+> into the global backfill behaviour explicitly.
+
+### Contributing
+
+Use `scripts/dev-install.sh` instead of a plain `pip install -e .`.
+Hatch's `force-include` (needed for the published wheel) writes
+static copies of the root-level flat modules into site-packages at
+install time, which silently break live editing until the next
+reinstall. The script runs the editable install and then replaces
+those copies with symlinks back to the source tree, so edits to
+`scan.py` / `init.py` / `db_ops.py` / etc. propagate immediately.
 
 ## The `mojo` CLI
 
@@ -283,9 +323,12 @@ of:
    ```bash
    MOJO_HOME=/srv/mojo mojo dashboard --host 0.0.0.0 --port 8765 --no-browser
    ```
-3. **Per-project sidecar** — keep `MOJO_HOME=./.mojo` inside each repo so
-   every project has its own isolated store and CLAUDE.md injections.
-   Useful when you don't want cross-project knowledge bleed.
+3. **Per-project sidecar** — after a single global `mojo init`, create
+   an empty `.mojo/` directory inside any repo that should keep its
+   own isolated store and CLAUDE.md injections. The session hook
+   walks up from cwd and routes transcripts to the nearest sidecar,
+   falling back to the global store everywhere else. See
+   [Per-project isolation](#per-project-isolation) for details.
 
 ## Cost
 
