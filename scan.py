@@ -267,6 +267,35 @@ def scan_git_history(repo_path: str, max_commits: int = 200,
             by_type[c["type"]] = by_type.get(c["type"], 0) + 1
         for t, count in sorted(by_type.items()):
             console.print(f"  {t}: {count}")
+    else:
+        # Zero candidates is the default outcome on young or terse
+        # repositories, and the silent 0 is a common "is this broken?"
+        # moment for first-time users. Surface *why* it's zero and what
+        # to do next instead of just ending the command.
+        console.print(
+            "\n[yellow]No candidates matched the rule-based extractors.[/yellow]\n"
+            "[dim]The git scanner looks for specific signal patterns:[/dim]"
+        )
+        console.print(
+            "[dim]  • [bold]revert[/bold] / [bold]undo[/bold]  → anti-patterns[/dim]\n"
+            "[dim]  • [bold]fix:[/bold] / [bold]bugfix:[/bold] / [bold]hotfix:[/bold] → "
+            "debug playbooks[/dim]\n"
+            "[dim]  • decision verbs (replace, migrate, instead of, never, "
+            "do not) → architecture decisions[/dim]\n"
+            "[dim]  • commits with a long body (>100 chars) → domain rules[/dim]"
+        )
+        if len(commits) < 10:
+            console.print(
+                f"\n[yellow]This repo only has {len(commits)} commit(s) — "
+                f"that's usually too little history for rule-based mining.[/yellow]\n"
+                "[dim]Try one of:[/dim]\n"
+                "[dim]  • [cyan]mojo import-seed seeds/seed_knowledge.json[/cyan]  "
+                "(hand-curated, grade B+)[/dim]\n"
+                "[dim]  • [cyan]mojo scan sessions[/cyan] + [cyan]mojo extract[/cyan]  "
+                "(LLM-mine past Claude Code sessions)[/dim]\n"
+                "[dim]  • Open the dashboard and click [bold]+ Add[/bold] to enter "
+                "rules manually[/dim]"
+            )
 
     return candidates
 
