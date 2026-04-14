@@ -16,8 +16,16 @@ from db_ops import init_db, MOJO_DIR
 
 console = Console()
 
-HOOKS_DIR = Path(__file__).parent / "hooks"
-CONFIG_DIR = Path(__file__).parent / "config"
+# Resolve symlinks before deriving sibling directories. Editable
+# dev installs symlink init.py from site-packages back to the source
+# tree (see scripts/dev-install.sh), and ``Path(__file__).parent``
+# on a symlinked module returns the *link's* parent (site-packages),
+# not the source-tree parent where the hooks/ and config/ siblings
+# actually live. Calling .resolve() once here fixes the hook-copy
+# step for both regular and dev installs.
+_SOURCE_ROOT = Path(__file__).resolve().parent
+HOOKS_DIR = _SOURCE_ROOT / "hooks"
+CONFIG_DIR = _SOURCE_ROOT / "config"
 
 
 def init_mojo(skip_hooks: bool = False):

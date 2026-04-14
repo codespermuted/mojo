@@ -20,7 +20,11 @@ def get_mojo_home() -> Path:
 
 MOJO_DIR = get_mojo_home()
 DB_PATH = MOJO_DIR / "mojo.db"
-SCHEMA_PATH = Path(__file__).parent / "db" / "schema.sql"
+# Resolve symlinks so dev installs (scripts/dev-install.sh symlinks
+# db_ops.py back into site-packages) still find schema.sql alongside
+# the source tree copy rather than a potentially stale site-packages
+# snapshot.
+SCHEMA_PATH = Path(__file__).resolve().parent / "db" / "schema.sql"
 
 
 CONFIDENCE_GRADES = {
