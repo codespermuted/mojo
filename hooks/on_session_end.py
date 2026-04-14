@@ -3,17 +3,22 @@
 
 Called by Claude Code via hooks configuration. Reads JSON from stdin.
 Lightweight: only registers the session in SQLite. No LLM calls.
+
+The target ``mojo.db`` is resolved at runtime from the payload's
+``cwd`` via ``_resolve.resolve_mojo_db``, so a single global hook
+registration transparently routes per-project sessions to their
+sidecar stores when a ``.mojo`` directory exists alongside them.
 """
 
 import json
-import os
-import sys
 import sqlite3
-from pathlib import Path
+import sys
 from datetime import datetime
+from pathlib import Path
 
-MOJO_HOME = Path(os.environ.get("MOJO_HOME", Path.home() / ".mojo"))
-MOJO_DB = MOJO_HOME / "mojo.db"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _resolve import resolve_mojo_db
 
 
 def main():
@@ -29,14 +34,14 @@ def main():
     if not session_id or not transcript_path:
         return
 
-    # Ensure DB exists
-    if not MOJO_DB.exists():
-        return  # mojo init not yet run
+    mojo_db = resolve_mojo_db(cwd)
+    if mojo_db is None:
+        return  # no initialized store on the resolution chain
 
     try:
-        db = sqlite3.connect(str(MOJO_DB))
+        db = sqlite3.connect(str(mojo_db))
         db.execute("""
-            INSERT OR IGNORE INTO raw_sessions 
+            INSERT OR IGNORE INTO raw_sessions
             (id, transcript_path, project_path, ended_at)
             VALUES (?, ?, ?, ?)
         """, (session_id, transcript_path, cwd, datetime.now().isoformat()))
