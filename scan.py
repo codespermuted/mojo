@@ -429,40 +429,52 @@ def scan_project_folder(project_path: str) -> list[dict]:
             except (OSError, UnicodeDecodeError):
                 continue
 
-    # 4. Past Claude Code sessions
-    claude_projects = Path.home() / ".claude" / "projects"
-    if claude_projects.exists():
+    # 4. Past Claude Code sessions — scoped to THIS project only.
+    # Previously this walked every directory under ~/.claude/projects
+    # and listed transcripts from unrelated repos (e.g. scanning
+    # cloud_forecasting surfaced mojo / agentmux / manna sessions). Now
+    # we only look inside Claude Code's encoded directory for `root`.
+    target_dir = _encoded_project_dir(str(root))
+    if target_dir.exists():
         session_count = 0
-        for session_dir in claude_projects.iterdir():
-            if session_dir.is_dir():
-                sessions_subdir = session_dir / "sessions"
-                jsonl_dir = session_dir
-                # Check both structures
-                for search_dir in [sessions_subdir, jsonl_dir]:
-                    if search_dir.exists():
-                        for jsonl in search_dir.glob("*.jsonl"):
-                            found_sources.append({
-                                "source": "claude_session",
-                                "path": str(jsonl),
-                                "content": "",  # Don't load full content yet
-                            })
-                            session_count += 1
+        for search_dir in [target_dir / "sessions", target_dir]:
+            if not search_dir.exists():
+                continue
+            for jsonl in search_dir.glob("*.jsonl"):
+                found_sources.append({
+                    "source": "claude_session",
+                    "path": str(jsonl),
+                    "content": "",  # Don't load full content yet
+                })
+                session_count += 1
 
         if session_count:
-            console.print(f"[dim]Found {session_count} past Claude Code session(s)[/dim]")
+            console.print(
+                f"[dim]Found {session_count} past Claude Code session(s) "
+                f"for this project[/dim]"
+            )
 
     return found_sources
 
 
 def scan_folder_and_report(project_path: str):
-    """Scan a project folder and report what knowledge sources exist."""
+    """Scan a project folder and report what knowledge sources exist.
+
+    This command is **discovery-only** — it does not save anything to
+    the Mojo store. It tells you what raw material is on disk (CLAUDE.md,
+    README, configs, past Claude Code sessions) so you can decide which
+    extraction path to run next. Nothing here bills the Anthropic API.
+    """
     sources = scan_project_folder(project_path)
 
     if not sources:
         console.print("[yellow]No knowledge sources found.[/yellow]")
         return
 
-    console.print(f"\n[bold]Found {len(sources)} knowledge source(s):[/bold]\n")
+    console.print(
+        f"\n[bold]Discovered {len(sources)} source(s) "
+        f"(nothing saved — `scan folder` is discovery-only):[/bold]\n"
+    )
 
     by_type = {}
     for s in sources:
@@ -483,11 +495,26 @@ def scan_folder_and_report(project_path: str):
         if len(items) > 5:
             console.print(f"    [dim]... and {len(items) - 5} more[/dim]")
 
+    # Tailor next-step hints to what was actually discovered so the
+    # user isn't told to run commands that can't produce anything.
+    has_sessions = "claude_session" in by_type
+    console.print("\n[bold]Next steps:[/bold]")
     console.print(
-        f"\n[bold]Next steps:[/bold]\n"
-        f"  • Git scan:    python scan.py git {project_path}\n"
-        f"  • Extract sessions: python -m extract.pipeline\n"
-        f"  • Then sync:   python -m serve.sync --project {project_path}"
+        f"  • Rule-based git scan (free):  "
+        f"[cyan]mojo scan git {project_path}[/cyan]"
+    )
+    if has_sessions:
+        console.print(
+            f"  • Register past sessions:      "
+            f"[cyan]mojo scan sessions --project {project_path}[/cyan]"
+        )
+        console.print(
+            "  • LLM-extract registered sessions (needs "
+            "ANTHROPIC_API_KEY):  [cyan]mojo extract[/cyan]"
+        )
+    console.print(
+        f"  • Inject graded knowledge:     "
+        f"[cyan]mojo sync --project {project_path}[/cyan]"
     )
 
 
