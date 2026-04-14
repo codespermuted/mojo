@@ -243,10 +243,13 @@ def get_pending_sessions(db: sqlite3.Connection,
         return [_row_to_dict(r) for r in rows]
 
     abs_path = str(Path(project_path).expanduser().resolve())
-    # Claude Code encodes project paths by replacing "/" with "-".
-    # Leading slash → leading dash, so "/workspace/Desktop/mojo" becomes
-    # "-workspace-Desktop-mojo".
-    encoded = abs_path.replace("/", "-")
+    # Claude Code encodes project paths by replacing both "/" and "_"
+    # with "-" (leading slash → leading dash), so
+    # "/workspace/Desktop/cloud_forecasting" becomes
+    # "-workspace-Desktop-cloud-forecasting". Verified empirically on
+    # Claude Code 2.x; do not change without retesting a path containing
+    # an underscore.
+    encoded = abs_path.replace("/", "-").replace("_", "-")
     # The scan backfill stores the Claude Code per-project directory as
     # ~/.claude/projects/<encoded>. Match it exactly — never as a LIKE
     # substring, because sibling projects with prefix-shared names

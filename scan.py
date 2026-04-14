@@ -516,6 +516,12 @@ def main():
     # mojo scan sessions
     sess_p = sub.add_parser("sessions", help="Backfill from past Claude Code sessions")
     sess_p.add_argument("--max-sessions", type=int, default=50)
+    sess_p.add_argument(
+        "--project", "-p",
+        help="Only register sessions from this project path "
+             "(defaults to the current working directory). Use "
+             "'--project all' to backfill every project on disk.",
+    )
 
     args = parser.parse_args()
 
@@ -527,27 +533,86 @@ def main():
         else:
             scan_and_save(args.path, args.max_commits, args.auto_approve)
     elif args.cmd == "sessions":
-        backfill_sessions(args.max_sessions)
+        if args.project and args.project.lower() == "all":
+            proj: Optional[str] = None
+        else:
+            proj = args.project or str(Path.cwd())
+        backfill_sessions(args.max_sessions, project_path=proj)
     else:
         parser.print_help()
 
 
-def backfill_sessions(max_sessions: int = 50):
-    """Register past Claude Code sessions for extraction."""
+def _encoded_project_dir(project_path: str) -> Path:
+    """Return the ~/.claude/projects/<encoded> directory for a project path.
+
+    Claude Code encodes project paths into its per-project transcript
+    directory by replacing every ``/`` **and** ``_`` with ``-`` (verified
+    empirically against Claude Code ≥ 2.0). Example:
+    ``/workspace/Desktop/cloud_forecasting`` →
+    ``-workspace-Desktop-cloud-forecasting``.
+    """
+    abs_path = str(Path(project_path).expanduser().resolve())
+    encoded = abs_path.replace("/", "-").replace("_", "-")
+    return Path.home() / ".claude" / "projects" / encoded
+
+
+def _iter_session_dirs(project_path: Optional[str]) -> list[Path]:
+    """Yield Claude Code per-project session directories to scan.
+
+    - If ``project_path`` is None → every subdirectory under
+      ``~/.claude/projects`` (explicit opt-in via ``--project all``).
+    - Otherwise → only the directory that Claude Code created for this
+      project, if it exists. Mojo's own repo is skipped so scanning does
+      not feed its own development sessions back into a user's store.
+    """
     claude_projects = Path.home() / ".claude" / "projects"
     if not claude_projects.exists():
-        console.print("[yellow]No Claude Code sessions found.[/yellow]")
+        return []
+
+    mojo_repo = Path(__file__).resolve().parent
+    mojo_encoded = mojo_repo.name  # fallback; full match below
+    mojo_encoded_full = str(mojo_repo).replace("/", "-")
+
+    if project_path is None:
+        dirs = [
+            d for d in claude_projects.iterdir()
+            if d.is_dir() and d.name != mojo_encoded_full
+        ]
+        return dirs
+
+    target = _encoded_project_dir(project_path)
+    return [target] if target.exists() else []
+
+
+def backfill_sessions(max_sessions: int = 50,
+                      project_path: Optional[str] = None):
+    """Register past Claude Code sessions for extraction.
+
+    When ``project_path`` is given (default: cwd), only sessions from that
+    project's Claude Code transcript directory are registered. Pass
+    ``project_path=None`` explicitly (``--project all`` on the CLI) to
+    backfill every project on the machine — this is the old global
+    behaviour and should be used deliberately.
+    """
+    session_dirs = _iter_session_dirs(project_path)
+    if not session_dirs:
+        if project_path:
+            console.print(
+                f"[yellow]No Claude Code sessions found for "
+                f"{project_path}[/yellow]\n"
+                f"[dim]Expected transcript dir: "
+                f"{_encoded_project_dir(project_path)}[/dim]"
+            )
+        else:
+            console.print("[yellow]No Claude Code sessions found.[/yellow]")
         return
 
     init_db()
     db = get_db()
     registered = 0
 
-    for project_dir in claude_projects.iterdir():
-        if not project_dir.is_dir():
-            continue
-
-        # Check both session structures
+    for project_dir in session_dirs:
+        # Check both session structures (legacy vs current)
         for search_dir in [project_dir / "sessions", project_dir]:
             if not search_dir.exists():
                 continue
@@ -559,7 +624,7 @@ def backfill_sessions(max_sessions: int = 50):
 
                 session_id = jsonl.stem
                 db.execute("""
-                    INSERT OR IGNORE INTO raw_sessions 
+                    INSERT OR IGNORE INTO raw_sessions
                     (id, transcript_path, project_path)
                     VALUES (?, ?, ?)
                 """, (session_id, str(jsonl), str(project_dir)))
@@ -568,8 +633,12 @@ def backfill_sessions(max_sessions: int = 50):
     db.commit()
     db.close()
 
-    console.print(f"[green]Registered {registered} past session(s) for extraction.[/green]")
-    console.print("[dim]Run `python -m extract.pipeline` to extract knowledge.[/dim]")
+    scope = f" from {project_path}" if project_path else " (all projects)"
+    console.print(
+        f"[green]Registered {registered} past session(s){scope} "
+        f"for extraction.[/green]"
+    )
+    console.print("[dim]Run `mojo extract` to extract knowledge.[/dim]")
 
 
 if __name__ == "__main__":
