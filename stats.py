@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Knowledge base statistics and ROI dashboard."""
 
+import os
 import sys
 from pathlib import Path
 
@@ -20,14 +21,54 @@ def show_stats(show_roi: bool = False):
     db = get_db()
     stats = get_stats(db)
 
+    # Pipeline-stage counts from raw_sessions give users a clearer
+    # picture when `Total Knowledge Items: 0`. Without this, a user
+    # who ran `scan sessions` + hooks but never paid for `extract`
+    # sees an empty store and assumes mojo is broken.
+    pending_row = db.execute(
+        "SELECT COUNT(*) FROM raw_sessions WHERE extracted = 0"
+    ).fetchone()
+    extracted_row = db.execute(
+        "SELECT COUNT(*) FROM raw_sessions WHERE extracted = 1"
+    ).fetchone()
+    pending_sessions = pending_row[0] if pending_row else 0
+    extracted_sessions = extracted_row[0] if extracted_row else 0
+
+    mojo_home_env = os.environ.get("MOJO_HOME", "")
+    store_label = mojo_home_env or str(Path.home() / ".mojo")
+
     # Main stats
     console.print(Panel.fit(
+        f"[dim]Store: {store_label}[/dim]\n"
         f"[bold]Total Knowledge Items:[/bold] {stats['total_knowledge']}\n"
+        f"[bold]Sessions — pending / extracted:[/bold] "
+        f"{pending_sessions} / {extracted_sessions}\n"
         f"[bold]Total API Cost:[/bold] ${stats['total_extraction_cost_usd']:.4f}\n"
         f"[bold]Total Reuses:[/bold] {stats['total_usage_count']}",
         title="Mojo Stats",
         border_style="blue",
     ))
+
+    # Actionable hint for the "empty store" case — the single most
+    # common point of confusion for first-time users.
+    if stats["total_knowledge"] == 0:
+        if pending_sessions > 0:
+            console.print(
+                f"[yellow]Store is empty, but {pending_sessions} session(s) "
+                f"are registered and waiting for extraction.[/yellow]\n"
+                "[dim]Run [cyan]mojo extract[/cyan] (needs ANTHROPIC_API_KEY) "
+                "or [cyan]mojo import-seed seeds/seed_knowledge.json[/cyan].[/dim]"
+            )
+        else:
+            console.print(
+                "[yellow]Store is empty and no sessions are registered.[/yellow]\n"
+                "[dim]Try:[/dim]\n"
+                "[dim]  • [cyan]mojo scan git <repo>[/cyan]  (free, rule-based)[/dim]\n"
+                "[dim]  • [cyan]mojo scan sessions[/cyan]    "
+                "(register past Claude Code sessions for this project)[/dim]\n"
+                "[dim]  • [cyan]mojo import-seed seeds/seed_knowledge.json[/cyan]  "
+                "(hand-curated, grade B+)[/dim]"
+            )
 
     # By type
     if stats["by_type"]:
