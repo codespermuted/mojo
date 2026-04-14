@@ -28,6 +28,19 @@ def init_mojo(skip_hooks: bool = False):
         border_style="blue"
     ))
 
+    # Upfront: be explicit about which MOJO_HOME we resolved and
+    # whether the user is running a per-project sidecar or a global
+    # store. This is the single most load-bearing piece of info for
+    # anyone debugging "where did my knowledge go?".
+    default_home = Path.home() / ".mojo"
+    if MOJO_DIR.resolve() == default_home.resolve():
+        scope_label = "[bold]global[/bold] (default)"
+    else:
+        scope_label = "[bold yellow]per-project sidecar[/bold yellow]"
+    console.print(
+        f"[dim]MOJO_HOME = {MOJO_DIR} — {scope_label}[/dim]"
+    )
+
     # 1. Create ~/.mojo directory
     MOJO_DIR.mkdir(parents=True, exist_ok=True)
     (MOJO_DIR / "skills").mkdir(exist_ok=True)
@@ -60,9 +73,27 @@ def init_mojo(skip_hooks: bool = False):
 
     # 5. Register hooks in Claude Code settings
     if not skip_hooks:
-        registered = register_claude_hooks()
+        registered, settings_path = register_claude_hooks()
         if registered:
-            console.print("[green]✓[/green] Claude Code hooks registered")
+            console.print(
+                f"[green]✓[/green] Claude Code hooks registered in "
+                f"[dim]{settings_path}[/dim]"
+            )
+            # Warn loudly when a per-project sidecar ends up writing
+            # its `MOJO_HOME=...` into the *global* settings.json —
+            # that means every Claude Code session on this machine,
+            # regardless of cwd, will try to push transcripts into
+            # this project's store. It's almost never what the user
+            # wants with `MOJO_HOME=./.mojo mojo init`.
+            if MOJO_DIR.resolve() != default_home.resolve():
+                console.print(
+                    "[yellow]  ⚠ Per-project MOJO_HOME was hard-coded "
+                    "into the global settings.json above.[/yellow]\n"
+                    "[dim]    Every Claude Code session on this machine "
+                    "will now write to this sidecar store until you\n"
+                    "    re-run `mojo init` from a different project or "
+                    "remove the hook entry manually.[/dim]"
+                )
         else:
             console.print(
                 "[yellow]⚠ Could not auto-register hooks. Add manually:[/yellow]\n"
@@ -85,14 +116,20 @@ def init_mojo(skip_hooks: bool = False):
     ))
 
 
-def register_claude_hooks() -> bool:
-    """Register Mojo hooks in Claude Code's global settings.json."""
+def register_claude_hooks() -> tuple[bool, Path]:
+    """Register Mojo hooks in Claude Code's global settings.json.
+
+    Returns ``(registered, settings_path)`` so the caller can tell the
+    user exactly which file it touched. Always the *global*
+    ``~/.claude/settings.json`` today — see the caller's warning for
+    the per-project sidecar gotcha this creates.
+    """
     # Claude Code global settings
     settings_path = Path.home() / ".claude" / "settings.json"
 
     if not settings_path.parent.exists():
         console.print("[dim]  ~/.claude not found — Claude Code not installed?[/dim]")
-        return False
+        return False, settings_path
 
     # Load existing settings
     settings = {}
@@ -155,7 +192,7 @@ def register_claude_hooks() -> bool:
         json.dumps(settings, indent=2, ensure_ascii=False),
         encoding="utf-8"
     )
-    return True
+    return True, settings_path
 
 
 def main():
