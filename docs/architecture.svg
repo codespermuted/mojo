@@ -1,0 +1,241 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 820" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+  <!-- Definitions -->
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <marker id="arrowLoop" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#7c3aed"/>
+    </marker>
+    <linearGradient id="gradHook" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#fef3c7"/>
+      <stop offset="1" stop-color="#fde68a"/>
+    </linearGradient>
+    <linearGradient id="gradExtract" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#dbeafe"/>
+      <stop offset="1" stop-color="#bfdbfe"/>
+    </linearGradient>
+    <linearGradient id="gradStorage" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#e9d5ff"/>
+      <stop offset="1" stop-color="#d8b4fe"/>
+    </linearGradient>
+    <linearGradient id="gradServe" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#dcfce7"/>
+      <stop offset="1" stop-color="#bbf7d0"/>
+    </linearGradient>
+    <linearGradient id="gradCC" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#fee2e2"/>
+      <stop offset="1" stop-color="#fecaca"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Title -->
+  <text x="600" y="38" text-anchor="middle" font-size="26" font-weight="700" fill="#0f172a">Mojo — 도메인 암묵지 자동 축적 시스템</text>
+  <text x="600" y="62" text-anchor="middle" font-size="14" fill="#64748b">Claude Code Hooks → Extract Pipeline → Knowledge Injection</text>
+
+  <!-- Claude Code (Source) -->
+  <g>
+    <rect x="40" y="110" width="180" height="120" rx="12" fill="url(#gradCC)" stroke="#dc2626" stroke-width="2"/>
+    <text x="130" y="140" text-anchor="middle" font-size="16" font-weight="700" fill="#7f1d1d">Claude Code</text>
+    <text x="130" y="160" text-anchor="middle" font-size="11" fill="#7f1d1d">(사용자 세션)</text>
+    <line x1="60" y1="172" x2="200" y2="172" stroke="#dc2626" stroke-opacity="0.3"/>
+    <text x="130" y="190" text-anchor="middle" font-size="11" fill="#450a0a">JSONL 트랜스크립트</text>
+    <text x="130" y="206" text-anchor="middle" font-size="11" fill="#450a0a">+ 사용자 정정 시그널</text>
+  </g>
+
+  <!-- Hooks layer -->
+  <g>
+    <rect x="290" y="95" width="220" height="150" rx="12" fill="url(#gradHook)" stroke="#d97706" stroke-width="2"/>
+    <text x="400" y="122" text-anchor="middle" font-size="16" font-weight="700" fill="#78350f">Hooks (Python)</text>
+    <text x="400" y="138" text-anchor="middle" font-size="10" fill="#78350f">silent fail · non-blocking</text>
+    <line x1="310" y1="148" x2="490" y2="148" stroke="#d97706" stroke-opacity="0.3"/>
+    <rect x="305" y="158" width="190" height="32" rx="6" fill="#fff" stroke="#d97706" stroke-opacity="0.5"/>
+    <text x="400" y="178" text-anchor="middle" font-size="12" fill="#78350f">on_session_end.py</text>
+    <rect x="305" y="196" width="190" height="32" rx="6" fill="#fff" stroke="#d97706" stroke-opacity="0.5"/>
+    <text x="400" y="216" text-anchor="middle" font-size="12" fill="#78350f">on_stop.py</text>
+  </g>
+
+  <!-- Extract pipeline -->
+  <g>
+    <rect x="290" y="290" width="660" height="190" rx="12" fill="url(#gradExtract)" stroke="#2563eb" stroke-width="2"/>
+    <text x="620" y="318" text-anchor="middle" font-size="16" font-weight="700" fill="#1e3a8a">Extract Pipeline (extract/pipeline.py)</text>
+    <text x="620" y="334" text-anchor="middle" font-size="10" fill="#1e3a8a">2단계 가성비 추출 · Haiku 필터 → Sonnet 구조화</text>
+
+    <!-- Stage boxes -->
+    <g font-size="11" fill="#1e3a8a">
+      <rect x="310" y="350" width="115" height="110" rx="8" fill="#fff" stroke="#3b82f6"/>
+      <text x="367" y="372" text-anchor="middle" font-weight="700">parser</text>
+      <text x="367" y="390" text-anchor="middle" font-size="10">JSONL →</text>
+      <text x="367" y="404" text-anchor="middle" font-size="10">turns</text>
+      <text x="367" y="442" text-anchor="middle" font-size="9" fill="#64748b">parser.py</text>
+
+      <rect x="435" y="350" width="115" height="110" rx="8" fill="#fff" stroke="#3b82f6"/>
+      <text x="492" y="372" text-anchor="middle" font-weight="700">signals</text>
+      <text x="492" y="390" text-anchor="middle" font-size="10">정정 감지</text>
+      <text x="492" y="404" text-anchor="middle" font-size="10">(rule, free)</text>
+      <text x="492" y="442" text-anchor="middle" font-size="9" fill="#64748b">signals.py</text>
+
+      <rect x="560" y="350" width="115" height="110" rx="8" fill="#fff" stroke="#3b82f6"/>
+      <text x="617" y="372" text-anchor="middle" font-weight="700">filter</text>
+      <text x="617" y="390" text-anchor="middle" font-size="10">noise drop</text>
+      <text x="617" y="404" text-anchor="middle" font-size="10">(Haiku)</text>
+      <text x="617" y="442" text-anchor="middle" font-size="9" fill="#64748b">prompts/*.xml</text>
+
+      <rect x="685" y="350" width="115" height="110" rx="8" fill="#fff" stroke="#3b82f6"/>
+      <text x="742" y="372" text-anchor="middle" font-weight="700">structure</text>
+      <text x="742" y="390" text-anchor="middle" font-size="10">knowledge</text>
+      <text x="742" y="404" text-anchor="middle" font-size="10">(Sonnet)</text>
+      <text x="742" y="442" text-anchor="middle" font-size="9" fill="#64748b">prompts/*.xml</text>
+
+      <rect x="810" y="350" width="115" height="110" rx="8" fill="#fff" stroke="#3b82f6"/>
+      <text x="867" y="372" text-anchor="middle" font-weight="700">dedup</text>
+      <text x="867" y="390" text-anchor="middle" font-size="10">중복 제거</text>
+      <text x="867" y="404" text-anchor="middle" font-size="10">+ 머지</text>
+      <text x="867" y="442" text-anchor="middle" font-size="9" fill="#64748b">dedup.py</text>
+    </g>
+
+    <!-- Internal arrows -->
+    <line x1="425" y1="405" x2="435" y2="405" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+    <line x1="550" y1="405" x2="560" y2="405" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+    <line x1="675" y1="405" x2="685" y2="405" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+    <line x1="800" y1="405" x2="810" y2="405" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
+  </g>
+
+  <!-- scan.py side input -->
+  <g>
+    <rect x="40" y="290" width="180" height="100" rx="12" fill="#f1f5f9" stroke="#64748b" stroke-width="2" stroke-dasharray="4 4"/>
+    <text x="130" y="318" text-anchor="middle" font-size="14" font-weight="700" fill="#334155">scan.py</text>
+    <text x="130" y="338" text-anchor="middle" font-size="11" fill="#475569">git history +</text>
+    <text x="130" y="354" text-anchor="middle" font-size="11" fill="#475569">folder scan</text>
+    <text x="130" y="376" text-anchor="middle" font-size="10" fill="#64748b">(rule-based · free)</text>
+  </g>
+
+  <!-- Seeds -->
+  <g>
+    <rect x="40" y="410" width="180" height="70" rx="12" fill="#f1f5f9" stroke="#64748b" stroke-width="2" stroke-dasharray="4 4"/>
+    <text x="130" y="438" text-anchor="middle" font-size="13" font-weight="700" fill="#334155">seeds/</text>
+    <text x="130" y="458" text-anchor="middle" font-size="10" fill="#475569">seed_knowledge.json</text>
+    <text x="130" y="473" text-anchor="middle" font-size="9" fill="#64748b">(import_seed.py)</text>
+  </g>
+
+  <!-- Storage (SQLite) -->
+  <g>
+    <rect x="290" y="525" width="660" height="135" rx="12" fill="url(#gradStorage)" stroke="#7c3aed" stroke-width="2"/>
+    <text x="620" y="552" text-anchor="middle" font-size="16" font-weight="700" fill="#4c1d95">Storage — SQLite (db_ops.py · 중앙화)</text>
+    <text x="620" y="568" text-anchor="middle" font-size="10" fill="#4c1d95">db/schema.sql</text>
+
+    <g font-size="11" fill="#4c1d95">
+      <rect x="310" y="582" width="145" height="60" rx="8" fill="#fff" stroke="#7c3aed"/>
+      <text x="382" y="604" text-anchor="middle" font-weight="700">raw_sessions</text>
+      <text x="382" y="622" text-anchor="middle" font-size="9" fill="#6b21a8">파싱된 세션 turns</text>
+
+      <rect x="465" y="582" width="145" height="60" rx="8" fill="#fff" stroke="#7c3aed"/>
+      <text x="537" y="604" text-anchor="middle" font-weight="700">knowledge</text>
+      <text x="537" y="622" text-anchor="middle" font-size="9" fill="#6b21a8">구조화된 지식</text>
+
+      <rect x="620" y="582" width="145" height="60" rx="8" fill="#fff" stroke="#7c3aed"/>
+      <text x="692" y="604" text-anchor="middle" font-weight="700">injections</text>
+      <text x="692" y="622" text-anchor="middle" font-size="9" fill="#6b21a8">주입 이력</text>
+
+      <rect x="775" y="582" width="155" height="60" rx="8" fill="#fff" stroke="#7c3aed"/>
+      <text x="852" y="604" text-anchor="middle" font-weight="700">extraction_costs</text>
+      <text x="852" y="622" text-anchor="middle" font-size="9" fill="#6b21a8">LLM 비용 추적</text>
+    </g>
+  </g>
+
+  <!-- Serve layer -->
+  <g>
+    <rect x="990" y="290" width="180" height="370" rx="12" fill="url(#gradServe)" stroke="#16a34a" stroke-width="2"/>
+    <text x="1080" y="318" text-anchor="middle" font-size="16" font-weight="700" fill="#14532d">Serve</text>
+    <text x="1080" y="334" text-anchor="middle" font-size="10" fill="#14532d">토큰 예산 주입</text>
+
+    <rect x="1010" y="350" width="140" height="70" rx="8" fill="#fff" stroke="#16a34a"/>
+    <text x="1080" y="376" text-anchor="middle" font-size="13" font-weight="700" fill="#14532d">packer.py</text>
+    <text x="1080" y="394" text-anchor="middle" font-size="10" fill="#166534">토큰 예산</text>
+    <text x="1080" y="408" text-anchor="middle" font-size="10" fill="#166534">우선순위 선택</text>
+
+    <line x1="1080" y1="425" x2="1080" y2="445" stroke="#16a34a" stroke-width="2" marker-end="url(#arrow)"/>
+
+    <rect x="1010" y="450" width="140" height="70" rx="8" fill="#fff" stroke="#16a34a"/>
+    <text x="1080" y="476" text-anchor="middle" font-size="13" font-weight="700" fill="#14532d">sync.py</text>
+    <text x="1080" y="494" text-anchor="middle" font-size="10" fill="#166534">CLAUDE.md /</text>
+    <text x="1080" y="508" text-anchor="middle" font-size="10" fill="#166534">SKILL.md 생성</text>
+
+    <line x1="1080" y1="525" x2="1080" y2="548" stroke="#16a34a" stroke-width="2" marker-end="url(#arrow)"/>
+
+    <rect x="1010" y="552" width="140" height="95" rx="8" fill="#ecfccb" stroke="#65a30d"/>
+    <text x="1080" y="574" text-anchor="middle" font-size="12" font-weight="700" fill="#365314">출력 산출물</text>
+    <text x="1080" y="592" text-anchor="middle" font-size="10" fill="#3f6212">📄 CLAUDE.md</text>
+    <text x="1080" y="608" text-anchor="middle" font-size="10" fill="#3f6212">📄 SKILL.md</text>
+    <text x="1080" y="630" text-anchor="middle" font-size="9" fill="#4d7c0f">Claude Code 소비</text>
+  </g>
+
+  <!-- CLI tools row -->
+  <g>
+    <rect x="40" y="700" width="1130" height="90" rx="12" fill="#f8fafc" stroke="#94a3b8" stroke-width="2"/>
+    <text x="605" y="724" text-anchor="middle" font-size="14" font-weight="700" fill="#334155">CLI &amp; 운영 도구</text>
+
+    <g font-size="11" fill="#334155">
+      <rect x="60" y="738" width="140" height="40" rx="6" fill="#fff" stroke="#94a3b8"/>
+      <text x="130" y="755" text-anchor="middle" font-weight="700">mojo_cli.py</text>
+      <text x="130" y="770" text-anchor="middle" font-size="9" fill="#64748b">진입점</text>
+
+      <rect x="215" y="738" width="140" height="40" rx="6" fill="#fff" stroke="#94a3b8"/>
+      <text x="285" y="755" text-anchor="middle" font-weight="700">init.py</text>
+      <text x="285" y="770" text-anchor="middle" font-size="9" fill="#64748b">설치/설정</text>
+
+      <rect x="370" y="738" width="140" height="40" rx="6" fill="#fff" stroke="#94a3b8"/>
+      <text x="440" y="755" text-anchor="middle" font-weight="700">review.py</text>
+      <text x="440" y="770" text-anchor="middle" font-size="9" fill="#64748b">지식 검토</text>
+
+      <rect x="525" y="738" width="140" height="40" rx="6" fill="#fff" stroke="#94a3b8"/>
+      <text x="595" y="755" text-anchor="middle" font-weight="700">search.py</text>
+      <text x="595" y="770" text-anchor="middle" font-size="9" fill="#64748b">조회</text>
+
+      <rect x="680" y="738" width="140" height="40" rx="6" fill="#fff" stroke="#94a3b8"/>
+      <text x="750" y="755" text-anchor="middle" font-weight="700">stats.py</text>
+      <text x="750" y="770" text-anchor="middle" font-size="9" fill="#64748b">통계/비용</text>
+
+      <rect x="835" y="738" width="140" height="40" rx="6" fill="#fff" stroke="#94a3b8"/>
+      <text x="905" y="755" text-anchor="middle" font-weight="700">scan.py</text>
+      <text x="905" y="770" text-anchor="middle" font-size="9" fill="#64748b">레포 스캔</text>
+
+      <rect x="990" y="738" width="160" height="40" rx="6" fill="#fff" stroke="#94a3b8"/>
+      <text x="1070" y="755" text-anchor="middle" font-weight="700">dashboard/</text>
+      <text x="1070" y="770" text-anchor="middle" font-size="9" fill="#64748b">시각화 UI</text>
+    </g>
+  </g>
+
+  <!-- Main flow arrows -->
+  <!-- Claude Code → Hooks -->
+  <line x1="220" y1="170" x2="288" y2="170" stroke="#475569" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="254" y="160" text-anchor="middle" font-size="9" fill="#475569">JSONL</text>
+
+  <!-- Hooks → Storage (raw_sessions) -->
+  <path d="M 400 245 L 400 525" fill="none" stroke="#475569" stroke-width="2.5" marker-end="url(#arrow)" stroke-dasharray="0"/>
+  <text x="412" y="270" font-size="9" fill="#475569">register</text>
+
+  <!-- Hooks → Extract -->
+  <line x1="450" y1="245" x2="490" y2="288" stroke="#475569" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="488" y="265" font-size="9" fill="#475569">trigger</text>
+
+  <!-- scan → Extract -->
+  <line x1="220" y1="335" x2="288" y2="375" stroke="#475569" stroke-width="2" marker-end="url(#arrow)" stroke-dasharray="4 3"/>
+  <!-- seeds → storage -->
+  <line x1="220" y1="445" x2="288" y2="600" stroke="#475569" stroke-width="2" marker-end="url(#arrow)" stroke-dasharray="4 3"/>
+
+  <!-- Extract → Storage (knowledge) -->
+  <line x1="620" y1="480" x2="620" y2="523" stroke="#475569" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="630" y="505" font-size="9" fill="#475569">save knowledge</text>
+
+  <!-- Storage → Serve (packer reads knowledge) -->
+  <path d="M 950 590 Q 980 590 990 480 L 990 410" fill="none" stroke="#475569" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="985" y="540" font-size="9" fill="#475569">read</text>
+
+  <!-- Serve output → Claude Code (loop) -->
+  <path d="M 1010 600 Q 1090 760 600 690 Q 130 660 130 230" fill="none" stroke="#7c3aed" stroke-width="2.5" stroke-dasharray="6 4" marker-end="url(#arrowLoop)"/>
+  <text x="600" y="678" text-anchor="middle" font-size="11" font-weight="700" fill="#7c3aed">♻ 지식 주입 (CLAUDE.md / SKILL.md) → 다음 세션에서 소비</text>
+
+  <!-- Footer / principles -->
+  <text x="600" y="808" text-anchor="middle" font-size="10" fill="#64748b">Design Principles · Zero-friction · Signal over noise · Token-efficient · Haiku→Sonnet 가성비</text>
+</svg>
