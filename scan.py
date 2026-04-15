@@ -30,9 +30,17 @@ console = Console()
 # --- Git commands ---
 
 def git_log(repo_path: str, max_commits: int = 200) -> list[dict]:
-    """Get git log with commit messages."""
+    """Get git log with commit messages.
+
+    Uses ``-z`` so each commit record is NUL-terminated, which keeps a
+    multi-line ``%b`` (body) inside its own record. The previous
+    newline-split approach only kept the first line of body and silently
+    dropped the rest, which made every commit with reasoning-rich body
+    text fail the ``len(body) > 100`` rule in ``classify_commit``.
+    """
     result = subprocess.run(
         ["git", "log", f"--max-count={max_commits}",
+         "-z",
          "--pretty=format:%H|||%s|||%an|||%ai|||%b",
          "--no-merges"],
         cwd=repo_path, capture_output=True, text=True
@@ -41,10 +49,11 @@ def git_log(repo_path: str, max_commits: int = 200) -> list[dict]:
         return []
 
     commits = []
-    for line in result.stdout.strip().split("\n"):
-        if not line.strip():
+    for record in result.stdout.split("\x00"):
+        record = record.strip()
+        if not record:
             continue
-        parts = line.split("|||")
+        parts = record.split("|||", 4)
         if len(parts) >= 4:
             commits.append({
                 "hash": parts[0],
