@@ -494,12 +494,13 @@ def _finalize_knowledge(db, session_id, knowledge, existing, extracted,
         )
         return
 
-    related = find_related(knowledge["content"], existing)
-    knowledge["related_ids"] = related
-    if related and client is not None:
+    related_pairs = find_related(knowledge["content"], existing)
+    knowledge["related_ids"] = [rid for rid, _ in related_pairs]
+    knowledge["related_scores"] = {rid: score for rid, score in related_pairs}
+    if related_pairs and client is not None:
         by_id = {it["id"]: it for it in existing}
         reasoning = {}
-        for rid in related:
+        for rid, _ in related_pairs:
             target = by_id.get(rid)
             if not target:
                 continue

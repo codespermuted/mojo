@@ -271,13 +271,15 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
 
       // explicit edges from summary/standalone only
       if (statusOf(it) !== "detail") {
-        let reasons = {};
-        const raw = it.related_reasoning;
-        if (raw && typeof raw === "object") {
-          reasons = raw;
-        } else if (typeof raw === "string" && raw) {
-          try { reasons = JSON.parse(raw); } catch (e) { reasons = {}; }
-        }
+        const parseObj = (raw) => {
+          if (raw && typeof raw === "object") return raw;
+          if (typeof raw === "string" && raw) {
+            try { return JSON.parse(raw); } catch (_) { return {}; }
+          }
+          return {};
+        };
+        const reasons = parseObj(it.related_reasoning);
+        const scores  = parseObj(it.related_scores);
         (it.related_ids || []).forEach(rid => {
           if (idSet.has(rid)) {
             const key = [it.id, rid].sort().join("-");
@@ -288,6 +290,7 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
                 target: rid,
                 type: "explicit",
                 reasoning: reasons[rid] || "",
+                score: typeof scores[rid] === "number" ? scores[rid] : null,
               });
             }
           }
@@ -471,14 +474,23 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
       "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;",
     }[c]));
 
+    // Explicit edges carry a cosine-similarity score from find_related.
+    // Map it onto a visible-but-bounded stroke width so stronger matches
+    // visually dominate without drowning weaker ones.
+    const explicitWidth = score => {
+      const s = typeof score === "number" ? Math.max(0, Math.min(1, score)) : 0.5;
+      return 0.7 + s * 2.2;  // range ≈ 0.7 .. 2.9
+    };
+    const baselineWidth = d => {
+      if (d.type === "parent") return 0.5;
+      if (d.type === "explicit") return explicitWidth(d.score);
+      return 0.7;
+    };
+
     const link = g.append("g").attr("fill", "none")
       .selectAll("path").data(links).join("path")
       .attr("stroke", d => d.type === "parent" ? faintColor : accentColor)
-      .attr("stroke-width", d => {
-        if (d.type === "parent") return 0.5;
-        if (d.type === "explicit") return 1.1;
-        return 0.7;
-      })
+      .attr("stroke-width", baselineWidth)
       .attr("stroke-linecap", "round")
       .attr("stroke-dasharray", d => d.type === "parent" ? "1,4" : null);
 
@@ -499,11 +511,15 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
           const reason = d.reasoning
             ? escapeHtml(d.reasoning)
             : "<em style='opacity:0.5'>No reason yet</em>";
+          const scoreChip = typeof d.score === "number"
+            ? `<span style="padding:1px 6px;border-radius:3px;background:rgba(78,205,196,0.18);color:#4ECDC4;font-size:9px;font-weight:600">cos ${d.score.toFixed(2)}</span>`
+            : "";
           html = `
-            <div style="margin-bottom:8px">
+            <div style="margin-bottom:8px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
               <strong style="color:#4ECDC4">🔗 ${escapeHtml(sourceTitle)}</strong>
               <span style="opacity:0.5">↔</span>
               <strong style="color:#4ECDC4">${escapeHtml(targetTitle)}</strong>
+              ${scoreChip}
             </div>
             <div style="margin-bottom:8px">${reason}</div>
             <div style="display:flex;gap:6px">
@@ -770,16 +786,17 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
           if (sid === d.id || tid === d.id) return 0.95;
           return Math.max(0.25, 0.7 - maxHop * 0.08);
         })
-        // Bump stroke slightly on touched edges so hover pops without
-        // needing a heavy baseline width.
+        // Bump stroke on touched edges so hover pops; keep the similarity
+        // weighting underneath so the relative ranking survives the bump.
         .attr("stroke-width", l => {
           const sid = typeof l.source === "object" ? l.source.id : l.source;
           const tid = typeof l.target === "object" ? l.target.id : l.target;
           const touches = sid === d.id || tid === d.id;
-          const bump = touches ? 1 : 0;
-          if (l.type === "parent") return 0.5 + bump * 0.6;
-          if (l.type === "explicit") return 1.1 + bump * 1.2;
-          return 0.7 + bump * 0.8;
+          const base = baselineWidth(l);
+          if (!touches) return base;
+          if (l.type === "parent") return base + 0.6;
+          if (l.type === "explicit") return base + 1.2;
+          return base + 0.8;
         });
 
       if (statusOf(d) === "detail") {
@@ -831,11 +848,7 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
     }).on("mouseleave", function () {
       resetNodeOpacity();
       resetLinkOpacity();
-      link.attr("stroke-width", l => {
-        if (l.type === "parent") return 0.5;
-        if (l.type === "explicit") return 1.1;
-        return 0.7;
-      });
+      link.attr("stroke-width", baselineWidth);
       d3.select(this).selectAll(".hover-label").remove();
       tooltipTimeout = setTimeout(() => tooltip.style("opacity", 0), 200);
     });

@@ -30,10 +30,13 @@ def is_duplicate(new_content: str, existing_contents: list[str],
 
 
 def find_related(new_content: str, existing_items: list[dict],
-                 top_k: int = 3, min_similarity: float = 0.3) -> list[str]:
+                 top_k: int = 3,
+                 min_similarity: float = 0.3) -> list[tuple[str, float]]:
     """Find related knowledge items by content similarity.
-    
-    Returns list of related knowledge IDs.
+
+    Returns list of (id, cosine_similarity) tuples, sorted by score desc.
+    The score is kept so downstream consumers can weight edges (e.g.,
+    map similarity to stroke width in the graph view).
     """
     if not existing_items:
         return []
@@ -45,10 +48,11 @@ def find_related(new_content: str, existing_items: list[dict],
         tfidf_matrix = vectorizer.fit_transform(all_texts)
         similarities = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:])[0]
 
-        # Get top-k above threshold
-        indexed = [(sim, i) for i, sim in enumerate(similarities) if sim >= min_similarity]
+        indexed = [(float(sim), i) for i, sim in enumerate(similarities)
+                   if sim >= min_similarity]
         indexed.sort(reverse=True)
 
-        return [existing_items[i]["id"] for _, i in indexed[:top_k]]
+        return [(existing_items[i]["id"], round(sim, 4))
+                for sim, i in indexed[:top_k]]
     except ValueError:
         return []

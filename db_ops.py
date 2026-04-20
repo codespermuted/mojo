@@ -119,6 +119,7 @@ def init_db(db_path: Optional[Path] = None):
         ("status",            "TEXT DEFAULT 'standalone'"),
         ("parent_id",         "TEXT"),
         ("detail_ids",        "TEXT DEFAULT '[]'"),
+        ("related_scores",    "TEXT DEFAULT '{}'"),
     ]
     status_added = False
     for col, ddl in migrations:
@@ -180,18 +181,22 @@ def save_knowledge(db: sqlite3.Connection, item: dict):
     related_reasoning = item.get("related_reasoning", {})
     if not isinstance(related_reasoning, str):
         related_reasoning = json.dumps(related_reasoning, ensure_ascii=False)
+    related_scores = item.get("related_scores", {})
+    if not isinstance(related_scores, str):
+        related_scores = json.dumps(related_scores, ensure_ascii=False)
     db.execute("""
         INSERT OR REPLACE INTO knowledge
         (id, type, domain, title, content, reasoning, confidence,
-         source_session_id, related_ids, related_reasoning, tags,
-         usage_count, approved, status, parent_id, detail_ids, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         source_session_id, related_ids, related_reasoning, related_scores,
+         tags, usage_count, approved, status, parent_id, detail_ids, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         item["id"], item["type"], item["domain"], item["title"],
         item["content"], item.get("reasoning", ""),
         item.get("confidence", 0.5), item.get("source_session_id", ""),
         json.dumps(item.get("related_ids", []), ensure_ascii=False),
         related_reasoning,
+        related_scores,
         json.dumps(item.get("tags", []), ensure_ascii=False),
         item.get("usage_count", 0), item.get("approved", 0),
         item.get("status", "standalone"),
@@ -356,11 +361,12 @@ def _row_to_dict(row) -> dict:
                 d[field] = json.loads(d[field])
             except (json.JSONDecodeError, TypeError):
                 d[field] = []
-    if "related_reasoning" in d and isinstance(d["related_reasoning"], str):
-        try:
-            d["related_reasoning"] = json.loads(d["related_reasoning"])
-        except (json.JSONDecodeError, TypeError):
-            d["related_reasoning"] = {}
+    for obj_field in ("related_reasoning", "related_scores"):
+        if obj_field in d and isinstance(d[obj_field], str):
+            try:
+                d[obj_field] = json.loads(d[obj_field])
+            except (json.JSONDecodeError, TypeError):
+                d[obj_field] = {}
     return d
 
 
