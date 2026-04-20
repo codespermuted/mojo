@@ -21,50 +21,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from db_ops import evidence_based_grade, get_db  # noqa: E402
+from db_ops import get_db  # noqa: E402
+# Reuse the server's helpers so static export matches live API shape
+# (lineage project name, related_scores parsing, etc.).
+from dashboard.server import _row_to_dict, _load_sessions_map  # noqa: E402
 
 STATIC_INDEX = Path(__file__).parent / "static" / "index.html"
-
-
-def _build_lineage(item: dict) -> dict:
-    source = item.get("source_session_id", "") or ""
-    lineage: dict = {"source_type": "unknown", "detail": source or "unknown"}
-    if source.startswith("memory-seed") or source.startswith("example"):
-        lineage["source_type"] = "seed"
-        lineage["detail"] = "Imported from seed file"
-    elif source.startswith("git-scan-"):
-        commit_hash = source.replace("git-scan-", "")
-        lineage["source_type"] = "git"
-        lineage["detail"] = f"Extracted from git commit {commit_hash}"
-        lineage["commit_hash"] = commit_hash
-    elif source.startswith("manual"):
-        lineage["source_type"] = "manual"
-        lineage["detail"] = "Manually added via dashboard"
-    elif source:
-        lineage["source_type"] = "llm"
-        lineage["detail"] = f"LLM-extracted from session {source}"
-        lineage["session_id"] = source
-    return lineage
-
-
-def _row_to_dict(row) -> dict:
-    d = dict(row)
-    for field in ("related_ids", "tags", "detail_ids"):
-        raw = d.get(field)
-        if isinstance(raw, str):
-            try:
-                d[field] = json.loads(raw)
-            except (json.JSONDecodeError, TypeError):
-                d[field] = []
-    rr = d.get("related_reasoning")
-    if isinstance(rr, str):
-        try:
-            d["related_reasoning"] = json.loads(rr)
-        except (json.JSONDecodeError, TypeError):
-            d["related_reasoning"] = {}
-    d["grade"] = evidence_based_grade(d)
-    d["lineage"] = _build_lineage(d)
-    return d
 
 
 def _collect_snapshot() -> dict:
@@ -78,8 +40,9 @@ def _collect_snapshot() -> dict:
             "SELECT * FROM knowledge ORDER BY domain, confidence DESC"
         ).fetchall()
 
-        active = [_row_to_dict(r) for r in active_rows]
-        everything = [_row_to_dict(r) for r in all_rows]
+        sessions_map = _load_sessions_map(db)
+        active = [_row_to_dict(r, sessions_map) for r in active_rows]
+        everything = [_row_to_dict(r, sessions_map) for r in all_rows]
 
         details: dict[str, list[dict]] = {}
         for item in everything:
@@ -88,7 +51,7 @@ def _collect_snapshot() -> dict:
                 "ORDER BY created_at",
                 (item["id"],),
             ).fetchall()
-            details[item["id"]] = [_row_to_dict(r) for r in detail_rows]
+            details[item["id"]] = [_row_to_dict(r, sessions_map) for r in detail_rows]
     finally:
         db.close()
 

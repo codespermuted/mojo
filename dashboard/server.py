@@ -74,8 +74,25 @@ class StructureRequest(BaseModel):
 
 # ─── Helpers ─────────────────────────────────────────────────
 
-def _build_lineage(item: dict) -> dict:
-    """Describe where a knowledge item came from, for UI display."""
+def _project_name_from_path(path: str) -> str:
+    """Best-effort short name for a raw_sessions.project_path value."""
+    if not path:
+        return ""
+    # Paths look like "/root/.claude/projects/-workspace-Desktop-cballm"
+    tail = path.rstrip("/").rsplit("/", 1)[-1]
+    marker = "-workspace-Desktop-"
+    if marker in tail:
+        return tail.split(marker, 1)[-1]
+    return tail
+
+
+def _build_lineage(item: dict, sessions_map: dict | None = None) -> dict:
+    """Describe where a knowledge item came from, for UI display.
+
+    If `sessions_map` is provided (keyed by session id → project_path), LLM
+    items get a resolved `project` name so the UI can show the repo
+    without a second lookup.
+    """
     source = item.get("source_session_id", "") or ""
     lineage: dict = {"source_type": "unknown", "detail": source or "unknown"}
 
@@ -92,12 +109,21 @@ def _build_lineage(item: dict) -> dict:
         lineage["detail"] = "Manually added via dashboard"
     elif source:
         lineage["source_type"] = "llm"
-        lineage["detail"] = f"LLM-extracted from session {source}"
         lineage["session_id"] = source
+        project_name = ""
+        if sessions_map:
+            project_name = _project_name_from_path(sessions_map.get(source, ""))
+        if project_name:
+            lineage["project"] = project_name
+            lineage["detail"] = (
+                f"LLM-extracted from session {source[:8]}… in {project_name}"
+            )
+        else:
+            lineage["detail"] = f"LLM-extracted from session {source}"
     return lineage
 
 
-def _row_to_dict(row) -> dict:
+def _row_to_dict(row, sessions_map: dict | None = None) -> dict:
     d = dict(row)
     for field in ("related_ids", "tags", "detail_ids"):
         raw = d.get(field)
@@ -106,26 +132,36 @@ def _row_to_dict(row) -> dict:
                 d[field] = json.loads(raw)
             except (json.JSONDecodeError, TypeError):
                 d[field] = []
-    rr = d.get("related_reasoning")
-    if isinstance(rr, str):
-        try:
-            d["related_reasoning"] = json.loads(rr)
-        except (json.JSONDecodeError, TypeError):
-            d["related_reasoning"] = {}
+    for obj_field in ("related_reasoning", "related_scores"):
+        raw = d.get(obj_field)
+        if isinstance(raw, str):
+            try:
+                d[obj_field] = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                d[obj_field] = {}
     d["grade"] = evidence_based_grade(d)
-    d["lineage"] = _build_lineage(d)
+    d["lineage"] = _build_lineage(d, sessions_map)
     return d
+
+
+def _load_sessions_map(db) -> dict:
+    try:
+        rows = db.execute("SELECT id, project_path FROM raw_sessions").fetchall()
+    except Exception:
+        return {}
+    return {r["id"]: r["project_path"] or "" for r in rows}
 
 
 def _fetch_one(kid: str) -> dict:
     db = get_db()
     try:
         row = db.execute("SELECT * FROM knowledge WHERE id = ?", (kid,)).fetchone()
+        sessions_map = _load_sessions_map(db)
     finally:
         db.close()
     if not row:
         raise HTTPException(status_code=404, detail=f"Knowledge {kid} not found")
-    return _row_to_dict(row)
+    return _row_to_dict(row, sessions_map)
 
 
 # ─── API ─────────────────────────────────────────────────────
@@ -139,9 +175,10 @@ def list_knowledge(include_archived: bool = False):
             query += " WHERE archived = 0"
         query += " ORDER BY domain, confidence DESC"
         rows = db.execute(query).fetchall()
+        sessions_map = _load_sessions_map(db)
     finally:
         db.close()
-    return [_row_to_dict(r) for r in rows]
+    return [_row_to_dict(r, sessions_map) for r in rows]
 
 
 @app.get("/api/knowledge/{kid}")

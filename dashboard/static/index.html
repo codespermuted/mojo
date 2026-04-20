@@ -1030,6 +1030,7 @@ function KCard({
   onStructure, onRefine, selectable, selected, onToggleSelect,
   details, // pre-loaded detail rows when this is a summary
   expandedDetailIds, onToggleDetail,
+  onSelectSession, onNavigateTo,
 }) {
   const [editing, setEditing] = useState(false);
   const [ec, setEc] = useState(item.content);
@@ -1050,7 +1051,7 @@ function KCard({
   const save = () => { onEdit(item.id, ec, er); setEditing(false); };
 
   return (
-    <div onClick={() => !editing && onToggle(item.id)}
+    <div id={`kcard-${item.id}`} onClick={() => !editing && onToggle(item.id)}
       style={{
         background: item.approved ? "var(--card)" : "var(--card-pending)",
         backgroundImage: hashBg,
@@ -1118,12 +1119,31 @@ function KCard({
               </div>
               {item.lineage && (
                 <div style={{ fontSize:10, color:"var(--text-faint)", marginBottom:4, wordBreak:"break-word", overflowWrap:"break-word", whiteSpace:"normal" }}>
-                  📍 Origin: {item.lineage.detail}
+                  📍 Origin: {
+                    item.lineage.source_type === "llm" && item.lineage.session_id ? (
+                      <span
+                        onClick={(e) => { e.stopPropagation(); onSelectSession && onSelectSession(item.lineage.session_id); }}
+                        title={`Show all items from session ${item.lineage.session_id}`}
+                        style={{ color:"var(--accent)", textDecoration:"underline", cursor:"pointer" }}>
+                        {item.lineage.detail}
+                      </span>
+                    ) : item.lineage.detail
+                  }
                 </div>
               )}
               {item.related_ids?.length > 0 && (
                 <div style={{ fontSize:10, color:"var(--text-faint)", marginBottom:8, wordBreak:"break-word", overflowWrap:"break-word" }}>
-                  🔗 related: {item.related_ids.join(", ")}
+                  🔗 related: {item.related_ids.map((rid, idx) => (
+                    <React.Fragment key={rid}>
+                      {idx > 0 && ", "}
+                      <span
+                        onClick={(e) => { e.stopPropagation(); onNavigateTo && onNavigateTo(rid); }}
+                        title={`Jump to ${rid}`}
+                        style={{ color:"var(--accent)", textDecoration:"underline", cursor:"pointer" }}>
+                        {rid}
+                      </span>
+                    </React.Fragment>
+                  ))}
                 </div>
               )}
               <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
@@ -1215,6 +1235,7 @@ function MojoDashboard() {
   const [showAdd, setShowAdd] = useState(false);
   const [toast, setToast] = useState(null);  // { msg, undo? }
   const [theme, setTheme] = useState(() => localStorage.getItem("mojo-theme") || "dark");
+  const [selSessionId, setSelSessionId] = useState(null);  // session UUID to filter by
 
   // Helper: toggle a value in a Set-state
   const toggleInSet = (setter) => (value) => {
@@ -1362,6 +1383,37 @@ function MojoDashboard() {
     }
   };
 
+  // Navigate to a knowledge item from anywhere (related_id click, graph, etc.).
+  // If the target is filtered out, clear the filters that hide it so the user
+  // sees it instead of getting a silent no-op.
+  const navigateTo = async (id) => {
+    const target = items.find(i => i.id === id);
+    if (!target) return;
+    if (!matchesFilters(target)) {
+      setSelDomains(new Set());
+      setSelTypes(new Set());
+      setSelSources(new Set());
+      setSelStatuses(new Set());
+      setSearch("");
+      setSelSessionId(null);
+    }
+    setView("list");
+    await expandItemWithLinks(id);
+    setTimeout(() => {
+      const el = document.getElementById(`kcard-${id}`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.style.outline = "2px solid var(--accent)";
+        setTimeout(() => { el.style.outline = ""; }, 1400);
+      }
+    }, 80);
+  };
+
+  const selectSession = (sessionId) => {
+    setSelSessionId(sessionId);
+    setView("list");
+  };
+
   // Linked details (parent_id set) are shown inside the summary card, not at the top level.
   const baseVisible = active.filter(i => {
     if (statusOf(i) === "detail" && i.parent_id) return false;
@@ -1383,6 +1435,7 @@ function MojoDashboard() {
       );
       if (!ok) return false;
     }
+    if (selSessionId && i.source_session_id !== selSessionId) return false;
     return true;
   };
   const filtered = baseVisible.filter(matchesFilters);
@@ -1616,7 +1669,7 @@ function MojoDashboard() {
                 style={{ width:"100%", padding:"9px 12px 9px 32px", borderRadius:7, border:"1px solid var(--border-strong)", background:"var(--card)", color:"var(--text-main)", fontSize:12.5, outline:"none", fontFamily:"'JetBrains Mono',monospace" }} />
               <span style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)", color:"var(--text-faint)", fontSize:13 }}>⌕</span>
             </div>
-            {(selDomains.size || selTypes.size || selSources.size || selStatuses.size || search) ? (
+            {(selDomains.size || selTypes.size || selSources.size || selStatuses.size || search || selSessionId) ? (
               <div style={{ display:"flex", gap:5, marginTop:8, flexWrap:"wrap", alignItems:"center" }}>
                 <span style={{ fontSize:10, color:"var(--text-dim)" }}>Filters:</span>
                 {[...selDomains].map(d => (
@@ -1632,6 +1685,7 @@ function MojoDashboard() {
                   <span key={`v-${s}`} onClick={() => toggleStatus(s)} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:"rgba(217,119,6,0.15)", color:"#D97706", cursor:"pointer" }}>{s} ×</span>
                 ))}
                 {search && <span onClick={() => setSearch("")} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:"var(--bar-track)", color:"var(--text-mid)", cursor:"pointer" }}>"{search}" ×</span>}
+                {selSessionId && <span onClick={() => setSelSessionId(null)} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:"rgba(52,211,153,0.18)", color:"#34D399", cursor:"pointer" }}>session {selSessionId.slice(0,8)}… ×</span>}
                 <span style={{ fontSize:10, color:"var(--text-faint)" }}>({filtered.length})</span>
                 <span
                   onClick={() => {
@@ -1640,6 +1694,7 @@ function MojoDashboard() {
                     setSelSources(new Set());
                     setSelStatuses(new Set());
                     setSearch("");
+                    setSelSessionId(null);
                   }}
                   title="Clear all filters"
                   style={{ marginLeft:"auto", fontSize:10, padding:"2px 8px", borderRadius:4, border:"1px solid var(--border-strong)", color:"var(--text-mid)", cursor:"pointer", userSelect:"none" }}>
@@ -1706,6 +1761,8 @@ function MojoDashboard() {
                           details={statusOf(item) === "summary" ? detailsByParent[item.id] : null}
                           expandedDetailIds={expandedDetailIds}
                           onToggleDetail={toggleDetailExpand}
+                          onSelectSession={selectSession}
+                          onNavigateTo={navigateTo}
                         />
                       ))}
                     </div>
