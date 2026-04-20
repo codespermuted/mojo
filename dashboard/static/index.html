@@ -52,6 +52,10 @@
   button { font-family: inherit; }
   input, textarea, select { font-family: inherit; color: var(--text-main); }
   #root { min-height: 100vh; }
+  /* Sidebar row: label grows and truncates with ellipsis, count stays pinned right. */
+  .sb-row { display:flex; align-items:center; gap:6px; min-width:0; }
+  .sb-label { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .sb-count { flex:0 0 auto; font-size:10px; color:var(--text-faint); }
 </style>
 </head>
 <body>
@@ -1484,8 +1488,10 @@ function MojoDashboard() {
             )}
           </div>
           <div onClick={() => setSelDomains(new Set())}
+            className="sb-row"
             style={{ padding:"6px 12px", cursor:"pointer", fontSize:12.5, background: selDomains.size === 0 ? "var(--accent-bg)" : "transparent", color: selDomains.size === 0 ? "var(--accent)" : "var(--text-mid)", borderLeft: selDomains.size === 0 ? "2px solid var(--accent)" : "2px solid transparent" }}>
-            All ({active.length})
+            <span className="sb-label">All</span>
+            <span className="sb-count">{active.length}</span>
           </div>
           {Object.entries(domainTree).sort().map(([d, info]) => {
             const selected = selDomains.has(d);
@@ -1505,16 +1511,23 @@ function MojoDashboard() {
                   </span>
                   <span
                     onClick={() => { toggleDomain(d); if (hasSubs && !expanded) toggleDomainExpand(d); }}
-                    style={{ flex:1, display:"flex", justifyContent:"space-between" }}>
-                    <span>{d}</span><span style={{ fontSize:10, color:"var(--text-faint)" }}>{info.count}</span>
+                    className="sb-row"
+                    title={d}
+                    style={{ flex:1 }}>
+                    <span className="sb-label">{d}</span>
+                    <span className="sb-count">{info.count}</span>
                   </span>
                 </div>
                 {expanded && subEntries.sort().map(([sub, cnt]) => {
                   const subSel = selDomains.has(sub);
+                  const subLabel = sub.split("/").slice(2).join("/") || sub;
                   return (
                     <div key={sub} onClick={() => toggleDomain(sub)}
+                      className="sb-row"
+                      title={sub}
                       style={{ padding:"4px 12px 4px 30px", cursor:"pointer", fontSize:11, color: subSel ? "var(--accent)" : "var(--text-dim)", background: subSel ? "var(--accent-bg)" : "transparent", borderLeft: subSel ? "2px solid var(--accent)" : "2px solid transparent" }}>
-                      └ {sub.split("/").slice(2).join("/") || sub} ({cnt})
+                      <span className="sb-label">└ {subLabel}</span>
+                      <span className="sb-count">{cnt}</span>
                     </div>
                   );
                 })}
@@ -1531,8 +1544,11 @@ function MojoDashboard() {
             if (!cnt) return null;
             const sel = selTypes.has(k);
             return <div key={k} onClick={() => toggleType(k)}
-              style={{ padding:"4px 12px", cursor:"pointer", fontSize:11.5, color: sel ? v.color : "var(--text-mid)", background: sel ? `${v.color}18` : "transparent", borderLeft: sel ? `2px solid ${v.color}` : "2px solid transparent", display:"flex", justifyContent:"space-between" }}>
-              <span>{v.icon} {v.label}</span><span style={{ fontSize:10, color:"var(--text-faint)" }}>{cnt}</span>
+              className="sb-row"
+              title={v.label}
+              style={{ padding:"4px 12px", cursor:"pointer", fontSize:11.5, color: sel ? v.color : "var(--text-mid)", background: sel ? `${v.color}18` : "transparent", borderLeft: sel ? `2px solid ${v.color}` : "2px solid transparent" }}>
+              <span className="sb-label">{v.icon} {v.label}</span>
+              <span className="sb-count">{cnt}</span>
             </div>;
           })}
 
@@ -1541,8 +1557,10 @@ function MojoDashboard() {
             {selStatuses.size > 0 && <span onClick={() => setSelStatuses(new Set())} style={{ cursor:"pointer", color:"var(--text-dim)", fontSize:9, textTransform:"none", letterSpacing:0 }}>clear</span>}
           </div>
           <div onClick={() => setSelStatuses(new Set())}
-            style={{ padding:"4px 12px", cursor:"pointer", fontSize:11.5, color: selStatuses.size === 0 ? "var(--accent)" : "var(--text-mid)", background: selStatuses.size === 0 ? "var(--accent-bg)" : "transparent", borderLeft: selStatuses.size === 0 ? "2px solid var(--accent)" : "2px solid transparent", display:"flex", justifyContent:"space-between" }}>
-            <span>All</span><span style={{ fontSize:10, color:"var(--text-faint)" }}>{active.length}</span>
+            className="sb-row"
+            style={{ padding:"4px 12px", cursor:"pointer", fontSize:11.5, color: selStatuses.size === 0 ? "var(--accent)" : "var(--text-mid)", background: selStatuses.size === 0 ? "var(--accent-bg)" : "transparent", borderLeft: selStatuses.size === 0 ? "2px solid var(--accent)" : "2px solid transparent" }}>
+            <span className="sb-label">All</span>
+            <span className="sb-count">{active.length}</span>
           </div>
           {[
             ["summary",    "📊 Summaries"],
@@ -1555,8 +1573,11 @@ function MojoDashboard() {
             const sel = selStatuses.has(k);
             return (
               <div key={k} onClick={() => toggleStatus(k)}
-                style={{ padding:"4px 12px", cursor:"pointer", fontSize:11.5, color: sel ? accent : "var(--text-mid)", background: sel ? `${accent}18` : "transparent", borderLeft: sel ? `2px solid ${accent}` : "2px solid transparent", display:"flex", justifyContent:"space-between", opacity: cnt === 0 ? 0.4 : 1 }}>
-                <span>{label}</span><span style={{ fontSize:10, color:"var(--text-faint)" }}>{cnt}</span>
+                className="sb-row"
+                title={label}
+                style={{ padding:"4px 12px", cursor:"pointer", fontSize:11.5, color: sel ? accent : "var(--text-mid)", background: sel ? `${accent}18` : "transparent", borderLeft: sel ? `2px solid ${accent}` : "2px solid transparent", opacity: cnt === 0 ? 0.4 : 1 }}>
+                <span className="sb-label">{label}</span>
+                <span className="sb-count">{cnt}</span>
               </div>
             );
           })}
@@ -1566,8 +1587,10 @@ function MojoDashboard() {
             {selSources.size > 0 && <span onClick={() => setSelSources(new Set())} style={{ cursor:"pointer", color:"var(--text-dim)", fontSize:9, textTransform:"none", letterSpacing:0 }}>clear</span>}
           </div>
           <div onClick={() => setSelSources(new Set())}
-            style={{ padding:"4px 12px", cursor:"pointer", fontSize:11.5, color: selSources.size === 0 ? "var(--accent)" : "var(--text-mid)", background: selSources.size === 0 ? "var(--accent-bg)" : "transparent", borderLeft: selSources.size === 0 ? "2px solid var(--accent)" : "2px solid transparent", display:"flex", justifyContent:"space-between" }}>
-            <span>All</span><span style={{ fontSize:10, color:"var(--text-faint)" }}>{active.length}</span>
+            className="sb-row"
+            style={{ padding:"4px 12px", cursor:"pointer", fontSize:11.5, color: selSources.size === 0 ? "var(--accent)" : "var(--text-mid)", background: selSources.size === 0 ? "var(--accent-bg)" : "transparent", borderLeft: selSources.size === 0 ? "2px solid var(--accent)" : "2px solid transparent" }}>
+            <span className="sb-label">All</span>
+            <span className="sb-count">{active.length}</span>
           </div>
           {["T1","T2","T3"].map(k => {
             const t = TIERS[k];
@@ -1575,8 +1598,10 @@ function MojoDashboard() {
             const sel = selSources.has(k);
             return (
               <div key={k} onClick={() => toggleSource(k)} title={t.long}
-                style={{ padding:"4px 12px", cursor:"pointer", fontSize:11.5, color: sel ? t.color : "var(--text-mid)", background: sel ? `${t.color}18` : "transparent", borderLeft: sel ? `2px solid ${t.color}` : "2px solid transparent", display:"flex", justifyContent:"space-between", opacity: cnt === 0 ? 0.4 : 1 }}>
-                <span>{k} · {t.label}</span><span style={{ fontSize:10, color:"var(--text-faint)" }}>{cnt}</span>
+                className="sb-row"
+                style={{ padding:"4px 12px", cursor:"pointer", fontSize:11.5, color: sel ? t.color : "var(--text-mid)", background: sel ? `${t.color}18` : "transparent", borderLeft: sel ? `2px solid ${t.color}` : "2px solid transparent", opacity: cnt === 0 ? 0.4 : 1 }}>
+                <span className="sb-label">{k} · {t.label}</span>
+                <span className="sb-count">{cnt}</span>
               </div>
             );
           })}
@@ -1608,6 +1633,18 @@ function MojoDashboard() {
                 ))}
                 {search && <span onClick={() => setSearch("")} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:"var(--bar-track)", color:"var(--text-mid)", cursor:"pointer" }}>"{search}" ×</span>}
                 <span style={{ fontSize:10, color:"var(--text-faint)" }}>({filtered.length})</span>
+                <span
+                  onClick={() => {
+                    setSelDomains(new Set());
+                    setSelTypes(new Set());
+                    setSelSources(new Set());
+                    setSelStatuses(new Set());
+                    setSearch("");
+                  }}
+                  title="Clear all filters"
+                  style={{ marginLeft:"auto", fontSize:10, padding:"2px 8px", borderRadius:4, border:"1px solid var(--border-strong)", color:"var(--text-mid)", cursor:"pointer", userSelect:"none" }}>
+                  ↺ reset all
+                </span>
               </div>
             ) : null}
           </div>
