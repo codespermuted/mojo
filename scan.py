@@ -360,8 +360,8 @@ def scan_and_save(repo_path: str, max_commits: int = 200,
             "id": kid,
             "type": cand["type"],
             "domain": domain,
-            "title": cand["commit_subject"][:50],
-            "content": content[:500],
+            "title": cand["commit_subject"],
+            "content": content,
             "status": "detail",
             "parent_id": None,
             "detail_ids": [],
@@ -369,7 +369,7 @@ def scan_and_save(repo_path: str, max_commits: int = 200,
                 f"Auto-extracted from git {cand['type']} commit {cand['commit_hash']} "
                 f"({cand['commit_date'][:10]}). "
                 f"Signal: {cand['reason']}. "
-                f"Original message: {cand['commit_subject'][:80]}"
+                f"Original message: {cand['commit_subject']}"
             ),
             "confidence": _signal_to_confidence(cand["signal_strength"]),
             "source_session_id": f"git-scan-{cand['commit_hash']}",
