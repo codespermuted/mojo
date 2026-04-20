@@ -132,6 +132,46 @@ def _usage_dict(usage) -> dict:
     }
 
 
+_RELATION_PROMPT = (
+    "You connect two pieces of domain knowledge that a similarity search "
+    "flagged as related. Explain, in ONE sentence (max 140 chars), what "
+    "they share in substance — the principle, constraint, or workflow step "
+    "that makes them meaningful companions. Do not just say they are "
+    "'similar' or 'about the same topic'. No preamble, no quotes, no "
+    "trailing period if the sentence ends in a noun. Output only the "
+    "sentence."
+)
+
+
+def _explain_relation(client: "anthropic.Anthropic", source: dict,
+                      target: dict, model: str = HAIKU_MODEL) -> str:
+    """One-sentence Haiku explanation of why two knowledge items are related.
+
+    Called after the TF-IDF `find_related` picks a neighbor so the edge
+    carries human-readable context instead of a bare ID link.
+    """
+    try:
+        user_content = (
+            f"Item A — {source.get('type', '')} · {source.get('domain', '')}\n"
+            f"Title: {source.get('title', '')}\n"
+            f"Content: {(source.get('content') or '')[:400]}\n\n"
+            f"Item B — {target.get('type', '')} · {target.get('domain', '')}\n"
+            f"Title: {target.get('title', '')}\n"
+            f"Content: {(target.get('content') or '')[:400]}"
+        )
+        response = client.messages.create(
+            model=model,
+            max_tokens=80,
+            system=_cached_system(_RELATION_PROMPT),
+            messages=[{"role": "user", "content": user_content}],
+        )
+        text = (response.content[0].text or "").strip()
+        return text[:160]
+    except Exception as e:
+        console.print(f"[dim]relation-reason failed: {e}[/dim]")
+        return ""
+
+
 def _truncate_for_filter(transcript_text: str) -> str:
     """Trim oversized transcripts to fit Haiku's context window.
 
@@ -456,6 +496,18 @@ def _finalize_knowledge(db, session_id, knowledge, existing, extracted,
 
     related = find_related(knowledge["content"], existing)
     knowledge["related_ids"] = related
+    if related and client is not None:
+        by_id = {it["id"]: it for it in existing}
+        reasoning = {}
+        for rid in related:
+            target = by_id.get(rid)
+            if not target:
+                continue
+            reason = _explain_relation(client, knowledge, target)
+            if reason:
+                reasoning[rid] = reason
+        if reasoning:
+            knowledge["related_reasoning"] = reasoning
     knowledge["source_session_id"] = session_id
 
     if knowledge.get("confidence", 0) >= 0.9:
