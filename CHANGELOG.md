@@ -21,6 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - `mojo extract` no longer walks every Claude Code project on disk when given a
   single project path.
+- `run_filter_api` / `run_filter_api_async` now truncate oversized transcripts
+  (keeping the tail) so a session exceeding Haiku's context window does not
+  abort the whole `mojo extract` run.
+
+### Removed
+- The `MOJO_LLM_BACKEND=claude-code` headless backend. It routed LLM calls
+  through `claude -p`, whose billing source (API key vs. subscription) was not
+  something the user could reliably predict from the subprocess environment.
+  Use `ANTHROPIC_API_KEY` with the default backend, which has transparent
+  per-call cost tracking in `extraction_costs`.
 
 ## [0.1.0] — 2026-04-13
 

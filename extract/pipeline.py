@@ -5,14 +5,12 @@ Optimizations:
 - Message Batches API for Sonnet structuring (`--batch`, ~50% cheaper).
 - Async parallel Haiku filter across sessions (`--parallel N`).
 - try/finally guard prevents duplicate token spend on retry.
-- Optional Claude Code headless backend (MOJO_LLM_BACKEND=claude-code).
 """
 
 import asyncio
 import json
 import os
 import re
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -65,16 +63,9 @@ PROMPTS_DIR = Path(__file__).parent / "prompts"
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 SONNET_MODEL = "claude-sonnet-4-6"
 
-BACKEND = os.environ.get("MOJO_LLM_BACKEND", "api").lower()  # "api" | "claude-code"
-
-# Haiku's 200k-token context maps to roughly ~800k characters. Cap filter input
-# well below that so the prompt + system overhead + output still fit, and so the
-# subprocess stdin write to `claude -p` stays well inside any OS pipe limits.
+# Haiku's 200k-token context maps to roughly ~800k characters. Cap filter
+# input well below that so the prompt + system overhead + output still fit.
 FILTER_INPUT_CHAR_BUDGET = 600_000
-
-# Headless `claude -p` can return a 429 when a burst of Sonnet/Haiku calls
-# trips the per-minute rate limit. Sleep + retry instead of failing the session.
-HEADLESS_429_BACKOFFS = (30, 60, 120)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -224,98 +215,16 @@ def run_structure_api(client: anthropic.Anthropic, candidate: dict,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Backend: Claude Code headless (fallback, no API key)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _run_claude_headless(system_text: str, user_content: str,
-                         model_alias: str) -> dict:
-    """Invoke `claude -p` headless and parse JSON response.
-
-    model_alias: "haiku" | "sonnet" (Claude Code's model flag)
-
-    The prompt is delivered on stdin, not argv, so it is not bounded by
-    ARG_MAX (~2 MB on Linux). On a 429 rate-limit response, retries with
-    exponential backoff before giving up.
-    """
-    full_prompt = f"{system_text}\n\n---\n\n{user_content}"
-    attempts = len(HEADLESS_429_BACKOFFS) + 1
-    wrapped: dict = {}
-    for attempt in range(attempts):
-        proc = subprocess.run(
-            ["claude", "-p", "--output-format", "json", "--model", model_alias],
-            input=full_prompt,
-            capture_output=True, text=True, timeout=300,
-        )
-        # `claude -p` surfaces API errors (including 429) as rc=1 with a JSON
-        # payload on stdout. Parse first, then decide whether to retry.
-        try:
-            wrapped = json.loads(proc.stdout) if proc.stdout.strip() else {}
-        except json.JSONDecodeError:
-            wrapped = {}
-        is_429 = (wrapped.get("is_error")
-                  and wrapped.get("api_error_status") == 429)
-        if is_429:
-            if attempt + 1 >= attempts:
-                raise RuntimeError(
-                    f"claude -p rate-limited (429) after {attempts} attempts: "
-                    f"{wrapped.get('result', '')[:200]}"
-                )
-            wait = HEADLESS_429_BACKOFFS[attempt]
-            console.print(
-                f"[yellow]  rate limited (429); retrying in {wait}s "
-                f"({attempt + 2}/{attempts})[/yellow]"
-            )
-            time.sleep(wait)
-            continue
-        if proc.returncode != 0 or not wrapped:
-            raise RuntimeError(
-                f"claude -p failed (rc={proc.returncode}, "
-                f"stdout={proc.stdout[:200]!r}, stderr={proc.stderr[:200]!r})"
-            )
-        if wrapped.get("is_error"):
-            raise RuntimeError(
-                f"claude -p API error "
-                f"(status={wrapped.get('api_error_status')}): "
-                f"{wrapped.get('result', '')[:200]}"
-            )
-        break
-    parsed = _parse_json_payload(wrapped.get("result", ""))
-    parsed["_usage"] = {
-        "input_tokens": 0, "output_tokens": 0,
-        "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
-    }
-    return parsed
-
-
-def run_filter_headless(transcript_text: str) -> dict:
-    transcript_text = _truncate_for_filter(transcript_text)
-    system_text, user_template = split_prompt("filter")
-    user_content = user_template.replace("{transcript}", transcript_text)
-    return _run_claude_headless(system_text, user_content, "haiku")
-
-
-def run_structure_headless(candidate: dict, excerpt: str,
-                           existing_knowledge: list[dict]) -> dict:
-    system_text, _ = split_prompt("structure")
-    user_content = _build_structure_user(candidate, excerpt, existing_knowledge)
-    return _run_claude_headless(system_text, user_content, "sonnet")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Backend dispatch
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_filter(client, transcript_text: str, model: str = HAIKU_MODEL) -> dict:
-    if BACKEND == "claude-code":
-        return run_filter_headless(transcript_text)
     return run_filter_api(client, transcript_text, model)
 
 
 def run_structure(client, candidate: dict, excerpt: str,
                   existing_knowledge: list[dict],
                   model: str = SONNET_MODEL) -> dict:
-    if BACKEND == "claude-code":
-        return run_structure_headless(candidate, excerpt, existing_knowledge)
     return run_structure_api(client, candidate, excerpt, existing_knowledge, model)
 
 
@@ -398,7 +307,7 @@ def extract_session(session_path: str, session_id: str,
     so a crash mid-pipeline will not cause double token spend on retry.
     """
     db = get_db()
-    client = None if BACKEND == "claude-code" else anthropic.Anthropic()
+    client = anthropic.Anthropic()
     extracted: list[dict] = []
 
     try:
@@ -456,7 +365,7 @@ def extract_session(session_path: str, session_id: str,
         # 5. Stage 2: Sonnet structure
         existing = get_all_knowledge(db)
 
-        if use_batch and BACKEND == "api" and len(candidates) > 0:
+        if use_batch and len(candidates) > 0:
             extracted = _structure_and_save_batch(
                 db, client, session_id, session_data, candidates, existing)
         else:
@@ -624,8 +533,6 @@ def extract_pending(dry_run: bool = False, project_path: str | None = None,
         flags.append("batch")
     if parallel > 1:
         flags.append(f"parallel={parallel}")
-    if BACKEND != "api":
-        flags.append(f"backend={BACKEND}")
     flag_str = f" [{', '.join(flags)}]" if flags else ""
     console.print(
         f"[bold]Processing {len(pending)} pending session(s){scope}{flag_str}...[/bold]"
@@ -633,7 +540,7 @@ def extract_pending(dry_run: bool = False, project_path: str | None = None,
 
     # Optional: async-parallel prefilter across sessions
     prefiltered: dict[str, dict] = {}
-    if parallel > 1 and BACKEND == "api" and not dry_run:
+    if parallel > 1 and not dry_run:
         console.print(f"[blue]Prefilter: parallel Haiku across {len(pending)} sessions[/blue]")
         prefiltered = asyncio.run(_prefilter_sessions_async(pending))
 

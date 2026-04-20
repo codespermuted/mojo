@@ -214,9 +214,6 @@ mojo extract --batch            # Message Batches API (~50% off Sonnet, async)
 mojo extract --parallel 4       # Haiku filter across 4 sessions in parallel
 mojo extract --batch --parallel 4
 
-# Use Claude Code subscription quota instead of an API key
-MOJO_LLM_BACKEND=claude-code mojo extract
-
 # Inject graded knowledge into a project's CLAUDE.md (and SKILL.md)
 mojo sync --project ~/code/my-service --skill
 
@@ -414,7 +411,6 @@ substantially below the baseline above:
 | **Prompt caching**            | Static system prompt → `cache_control: ephemeral`  | ~10–30% ↓ (more on multi-candidate sessions) |
 | **`--batch`**                 | Message Batches API for Sonnet structuring        | Additional **50% off** Sonnet stage |
 | **`--parallel N`**            | Async Haiku filter across sessions                 | Throughput ↑, no cost change |
-| **`MOJO_LLM_BACKEND=claude-code`** | Headless `claude -p` fallback                 | **$0 API cost** (uses Max plan quota) |
 
 `--batch` is async — the batch may take minutes to hours to complete.
 Prefer `--batch` for background/hook-triggered extraction and the default
