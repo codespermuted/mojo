@@ -8,6 +8,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from extract.parser import parse_session, turns_to_conversation_text
+from extract.pipeline import FILTER_INPUT_CHAR_BUDGET, _truncate_for_filter
 from extract.signals import detect_corrections, detect_domain_signals, score_session_value
 from extract.dedup import is_duplicate, find_related
 
@@ -88,6 +89,20 @@ class TestDedup:
         ]
         related = find_related("API pagination에서 cursor 방식", existing)
         assert isinstance(related, list)
+
+
+class TestFilterTruncation:
+    def test_preserves_input_under_budget(self):
+        text = "x" * (FILTER_INPUT_CHAR_BUDGET - 1)
+        assert _truncate_for_filter(text) is text
+
+    def test_truncates_oversize_input_keeping_tail(self):
+        head = "A" * 1000
+        tail = "B" * FILTER_INPUT_CHAR_BUDGET
+        out = _truncate_for_filter(head + tail)
+        assert "truncated" in out
+        assert out.endswith("B" * 1000)
+        assert len(out) <= FILTER_INPUT_CHAR_BUDGET + 200
 
 
 if __name__ == "__main__":

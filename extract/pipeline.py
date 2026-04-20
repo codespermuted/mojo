@@ -67,6 +67,15 @@ SONNET_MODEL = "claude-sonnet-4-6"
 
 BACKEND = os.environ.get("MOJO_LLM_BACKEND", "api").lower()  # "api" | "claude-code"
 
+# Haiku's 200k-token context maps to roughly ~800k characters. Cap filter input
+# well below that so the prompt + system overhead + output still fit, and so the
+# subprocess stdin write to `claude -p` stays well inside any OS pipe limits.
+FILTER_INPUT_CHAR_BUDGET = 600_000
+
+# Headless `claude -p` can return a 429 when a burst of Sonnet/Haiku calls
+# trips the per-minute rate limit. Sleep + retry instead of failing the session.
+HEADLESS_429_BACKOFFS = (30, 60, 120)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Prompt loading
@@ -132,9 +141,23 @@ def _usage_dict(usage) -> dict:
     }
 
 
+def _truncate_for_filter(transcript_text: str) -> str:
+    """Trim oversized transcripts to fit Haiku's context window.
+
+    Drops the oldest turns and prepends a marker, preserving the tail where
+    corrections and conclusions are most likely to live.
+    """
+    if len(transcript_text) <= FILTER_INPUT_CHAR_BUDGET:
+        return transcript_text
+    dropped = len(transcript_text) - FILTER_INPUT_CHAR_BUDGET
+    return (f"[... truncated {dropped} earlier characters to fit context ...]\n\n"
+            + transcript_text[-FILTER_INPUT_CHAR_BUDGET:])
+
+
 def run_filter_api(client: anthropic.Anthropic, transcript_text: str,
                    model: str = HAIKU_MODEL) -> dict:
     """Stage 1: Haiku filters for knowledge candidates (cached system)."""
+    transcript_text = _truncate_for_filter(transcript_text)
     system_text, user_template = split_prompt("filter")
     user_content = user_template.replace("{transcript}", transcript_text)
 
@@ -152,6 +175,7 @@ def run_filter_api(client: anthropic.Anthropic, transcript_text: str,
 async def run_filter_api_async(client: anthropic.AsyncAnthropic,
                                transcript_text: str,
                                model: str = HAIKU_MODEL) -> dict:
+    transcript_text = _truncate_for_filter(transcript_text)
     system_text, user_template = split_prompt("filter")
     user_content = user_template.replace("{transcript}", transcript_text)
     response = await client.messages.create(
@@ -208,18 +232,54 @@ def _run_claude_headless(system_text: str, user_content: str,
     """Invoke `claude -p` headless and parse JSON response.
 
     model_alias: "haiku" | "sonnet" (Claude Code's model flag)
+
+    The prompt is delivered on stdin, not argv, so it is not bounded by
+    ARG_MAX (~2 MB on Linux). On a 429 rate-limit response, retries with
+    exponential backoff before giving up.
     """
     full_prompt = f"{system_text}\n\n---\n\n{user_content}"
-    proc = subprocess.run(
-        ["claude", "-p", full_prompt, "--output-format", "json",
-         "--model", model_alias],
-        capture_output=True, text=True, timeout=300,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"claude -p failed: {proc.stderr[:500]}")
-    wrapped = json.loads(proc.stdout)
-    inner = wrapped.get("result", "")
-    parsed = _parse_json_payload(inner)
+    attempts = len(HEADLESS_429_BACKOFFS) + 1
+    wrapped: dict = {}
+    for attempt in range(attempts):
+        proc = subprocess.run(
+            ["claude", "-p", "--output-format", "json", "--model", model_alias],
+            input=full_prompt,
+            capture_output=True, text=True, timeout=300,
+        )
+        # `claude -p` surfaces API errors (including 429) as rc=1 with a JSON
+        # payload on stdout. Parse first, then decide whether to retry.
+        try:
+            wrapped = json.loads(proc.stdout) if proc.stdout.strip() else {}
+        except json.JSONDecodeError:
+            wrapped = {}
+        is_429 = (wrapped.get("is_error")
+                  and wrapped.get("api_error_status") == 429)
+        if is_429:
+            if attempt + 1 >= attempts:
+                raise RuntimeError(
+                    f"claude -p rate-limited (429) after {attempts} attempts: "
+                    f"{wrapped.get('result', '')[:200]}"
+                )
+            wait = HEADLESS_429_BACKOFFS[attempt]
+            console.print(
+                f"[yellow]  rate limited (429); retrying in {wait}s "
+                f"({attempt + 2}/{attempts})[/yellow]"
+            )
+            time.sleep(wait)
+            continue
+        if proc.returncode != 0 or not wrapped:
+            raise RuntimeError(
+                f"claude -p failed (rc={proc.returncode}, "
+                f"stdout={proc.stdout[:200]!r}, stderr={proc.stderr[:200]!r})"
+            )
+        if wrapped.get("is_error"):
+            raise RuntimeError(
+                f"claude -p API error "
+                f"(status={wrapped.get('api_error_status')}): "
+                f"{wrapped.get('result', '')[:200]}"
+            )
+        break
+    parsed = _parse_json_payload(wrapped.get("result", ""))
     parsed["_usage"] = {
         "input_tokens": 0, "output_tokens": 0,
         "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
@@ -228,6 +288,7 @@ def _run_claude_headless(system_text: str, user_content: str,
 
 
 def run_filter_headless(transcript_text: str) -> dict:
+    transcript_text = _truncate_for_filter(transcript_text)
     system_text, user_template = split_prompt("filter")
     user_content = user_template.replace("{transcript}", transcript_text)
     return _run_claude_headless(system_text, user_content, "haiku")
