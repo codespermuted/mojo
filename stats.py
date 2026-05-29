@@ -11,13 +11,14 @@ from rich.panel import Panel
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from db_ops import get_db, get_stats
+from db_ops import get_db, get_stats, init_db
 
 console = Console()
 
 
 def show_stats(show_roi: bool = False):
     """Display knowledge base statistics."""
+    init_db()
     db = get_db()
     stats = get_stats(db)
 
@@ -86,6 +87,22 @@ def show_stats(show_roi: bool = False):
         table.add_column("Count", justify="right")
         for d, c in sorted(stats["by_domain"].items(), key=lambda x: -x[1]):
             table.add_row(d, str(c))
+        console.print(table)
+
+    if stats.get("by_scope"):
+        table = Table(title="By Scope")
+        table.add_column("Scope")
+        table.add_column("Count", justify="right")
+        for s, c in sorted(stats["by_scope"].items()):
+            table.add_row(s, str(c))
+        console.print(table)
+
+    if stats.get("by_promotion_state"):
+        table = Table(title="By Promotion State")
+        table.add_column("State")
+        table.add_column("Count", justify="right")
+        for s, c in sorted(stats["by_promotion_state"].items()):
+            table.add_row(s, str(c))
         console.print(table)
 
     # ROI estimates

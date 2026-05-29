@@ -1,8 +1,8 @@
 # Mojo 🔮
 
-> A local-first knowledge pipeline that turns every Claude Code session into
-> durable, reusable domain expertise — and injects it back into the next
-> session automatically.
+> A local-first tacit-knowledge reference layer that turns Claude/Codex
+> sessions, commits, notes, and decisions into scoped advisory context for
+> the next task.
 
 ## The Problem
 
@@ -19,13 +19,30 @@ consumes it.
 
 ## The Promise
 
-Mojo captures every session through Claude Code's native hooks, distills
-the durable knowledge with a two-stage LLM pipeline (Haiku filter → Sonnet
-structure), grades it by evidence, and writes only the items that have
-earned their keep into the `CLAUDE.md` and `SKILL.md` files that future
-sessions already read.
+Mojo captures work evidence through local hooks and backfill commands,
+distills durable tacit knowledge with a two-stage LLM pipeline (Haiku
+filter → Sonnet structure), and keeps quality separate from applicability
+scope. By default it writes advisory context to `MOJO.md`, not into
+human-authored instruction files.
 
-Your workflow doesn't change. Claude just stops forgetting.
+Your workflow stays human-controlled: Mojo surfaces what matters, why it
+was selected, where it applies, and where it should not be generalized.
+
+## Reference Layer, Not Auto-Injection
+
+Mojo's default project workflow is attach/detach:
+
+```bash
+mojo attach --project ~/code/my-service
+mojo refresh --project ~/code/my-service --task "debug auth cache"
+mojo status --project ~/code/my-service
+mojo detach --project ~/code/my-service
+```
+
+`mojo refresh` generates `MOJO.md` as advisory context. It does not edit
+`AGENTS.md`, `CLAUDE.md`, `SKILL.md`, or other human-authored instruction
+files. Legacy `mojo sync` remains an explicit command for users who
+deliberately want to write approved knowledge into Claude-facing files.
 
 ## Why Mojo, not `.cursorrules` or a RAG index
 
@@ -34,7 +51,7 @@ Your workflow doesn't change. Claude just stops forgetting.
 | **Capture effort**          | Manual — interrupts flow                      | None, but dumps everything            | **Zero** — native Claude Code hooks fire silently in the background                   |
 | **Token budget**            | Grows unbounded, pollutes attention           | Every retrieval competes for tokens   | **Packer** with a hard budget + A–F grading, knapsack-fills only what's worth it      |
 | **Signal quality**          | Whatever you remember to write down           | Retrieves anything superficially similar | **Evidence-based grades** (A–F) — items earn promotion through reuse & approval     |
-| **Detail vs. index split**  | Everything in one file                        | Chunks with no hierarchy              | **`CLAUDE.md` holds summaries; `SKILL.md` holds the receipts** — read only when needed |
+| **Detail vs. index split**  | Everything in one file                        | Chunks with no hierarchy              | **`MOJO.md` holds scoped advisory context; DB rows hold the receipts** |
 | **Bootstrap a new project** | Empty on day one                              | Needs embedding pipeline              | **Free** rule-based git/folder scan bootstraps a baseline with zero API calls         |
 | **Review & edit**           | Open the file, hope you remember where        | Not really a thing                    | **Web dashboard** with list + graph views, inline edit, undo, multi-select filtering  |
 
@@ -46,12 +63,12 @@ Your workflow doesn't change. Claude just stops forgetting.
 that, Mojo records every session transcript to its SQLite store in the
 background. You never stop to write a rule down.
 
-### 2. Token-efficient injection
+### 2. Scoped advisory retrieval
 
-`serve/packer.py` treats the `CLAUDE.md` block as a knapsack: given a token
-budget (default ~3,000), it picks the items that maximize expected value
-based on grade, recency, reuse, and domain relevance. Your CLAUDE.md
-doesn't grow unbounded, and the model's attention isn't diluted.
+`advisory.py` maps the current task, project path, files, and search terms
+to relevant tacit knowledge. The generated `MOJO.md` includes scope,
+applicability warnings, source lineage, and review state so the agent can
+use it as context without treating raw evidence as a system instruction.
 
 ### 3. Evidence-based grading (A–F)
 
@@ -65,16 +82,17 @@ Grades are decided by *evidence*, not confidence scores:
 | **D** | Inferred     | Weak signal — low confidence, or no reasoning AND not approved  |
 | **F** | Contested    | `confidence < 0.3`, or never used for > 180 days                |
 
-First-match wins. F-grade items are **excluded from `CLAUDE.md` entirely**,
-so a single bad extraction can't poison future sessions.
+First-match wins. F-grade items are excluded from advisory output and
+legacy sync targets, so a single bad extraction can't poison future
+sessions.
 
-### 4. CLAUDE.md summaries, SKILL.md receipts
+### 4. Quality and scope are separate
 
-Mojo writes a short, high-grade index into the project's `CLAUDE.md`, and
-offloads the long-form evidence (code snippets, original reasoning, linked
-details) into per-domain `SKILL.md` files. Claude Code reads them *only*
-when the task actually needs the details — so your global context stays
-small and your skill files stay expressive.
+Every item tracks both quality and applicability: `taxon`, `scope`,
+`applies_when`, `does_not_apply_when`, `evidence_level`,
+`promotion_state`, `source_lineage`, `counterexamples`, and conflicts.
+This prevents project-local incidents from silently becoming universal
+"Always/Never" rules.
 
 ### 5. Free git-history scanning
 
@@ -178,10 +196,14 @@ Every command is a subcommand of a single entrypoint. Run
 
 ```
 mojo init          Create ~/.mojo, copy config, register Claude Code hooks
+mojo attach        Attach Mojo advisory metadata to a project
+mojo detach        Detach Mojo advisory metadata from a project
+mojo status        Show attachment, DB, and advisory-file status
+mojo refresh       Regenerate advisory MOJO.md for the current task
 mojo dashboard     Run the web dashboard (http://localhost:8765)
 mojo scan          Rule-based git / folder / sessions scan (free)
 mojo extract       Run the LLM extraction pipeline (Haiku → Sonnet)
-mojo sync          Write CLAUDE.md / SKILL.md into a project
+mojo sync          Explicit legacy write to CLAUDE.md / SKILL.md
 mojo review        Approve / edit extracted items from the terminal
 mojo search        Full-text search across the knowledge store
 mojo stats         Show store statistics and extraction cost
@@ -192,6 +214,7 @@ mojo import-seed   Bulk-import a seed knowledge JSON file
 
 ```bash
 # Bootstrap a new project from its git history (free, rule-based)
+mojo attach --project ~/code/my-service
 mojo scan git   ~/code/my-service
 mojo scan folder ~/code/my-service
 
@@ -214,7 +237,10 @@ mojo extract --batch            # Message Batches API (~50% off Sonnet, async)
 mojo extract --parallel 4       # Haiku filter across 4 sessions in parallel
 mojo extract --batch --parallel 4
 
-# Inject graded knowledge into a project's CLAUDE.md (and SKILL.md)
+# Generate advisory context without editing human-authored instruction files
+mojo refresh --project ~/code/my-service --task "debug list endpoint latency"
+
+# Optional explicit legacy injection into Claude-facing files
 mojo sync --project ~/code/my-service --skill
 
 # Audit what you have
@@ -229,22 +255,24 @@ dashboard, and competes on the same A–F grades. Mix and match freely.
 
 | Source                    | Command / Action                                    | Tier |
 |---------------------------|-----------------------------------------------------|------|
-| **Git history**           | `mojo scan git /path/to/project`                    | T2   |
-| **Folder scan**           | `mojo scan folder /path/to/project`                 | T2   |
-| **Past Claude sessions**  | `mojo scan sessions`                                | T3   |
-| **Live Claude sessions**  | automatic (hooks installed by `mojo init`)          | T3   |
-| **Hand-written seed**     | `mojo import-seed seeds/seed_knowledge.json`        | T1   |
-| **Dashboard → + Add**     | click **+ Add** in the top bar of the dashboard     | T1   |
-| **Remote GitHub repo**    | `git clone …` then `mojo scan git <dir>`            | T2   |
+| **Git history**           | `mojo scan git /path/to/project`                    | T2 evidence |
+| **Folder scan**           | `mojo scan folder /path/to/project`                 | T2 evidence |
+| **Past Claude sessions**  | `mojo scan sessions`                                | T2 evidence until reviewed |
+| **Live Claude sessions**  | automatic capture after hooks are installed         | T2 evidence until reviewed |
+| **Hand-written seed**     | `mojo import-seed seeds/seed_knowledge.json`        | Candidate until reviewed |
+| **Dashboard → + Add**     | click **+ Add** in the top bar of the dashboard     | Candidate until reviewed |
+| **Remote GitHub repo**    | `git clone …` then `mojo scan git <dir>`            | T2 evidence |
 
-The three tiers exist to answer *where did this come from*, not to gate
-trust — trust is tracked separately via the A–F grade.
+Sources answer where the evidence came from. Tiers answer whether the
+knowledge has been reviewed and is valuable enough to guide future work.
 
-| Tier          | Source           | Method                                | Default grade | Cost           |
-|---------------|------------------|---------------------------------------|---------------|----------------|
-| **T1 Stored** | Your expertise   | Seed import or manual dashboard entry | **B+**        | Free           |
-| **T2 Mined**  | Past work        | Rule-based git / folder scan          | **C**         | Free           |
-| **T3 Live**   | Ongoing work     | Claude Code hooks + LLM extraction    | **A–B**       | ~$0.04/session |
+| Tier            | Meaning                                                                 |
+|-----------------|-------------------------------------------------------------------------|
+| **T1 Tacit**    | High-value scoped knowledge with approval or strong evidence. It has a clear `scope`, rationale, and applicability conditions. |
+| **T2 Evidence** | Raw, cheap, candidate, or broadly available context. Useful for review and retrieval, but not a strong rule by itself. |
+
+Manual input is not automatically T1. It becomes T1 only after review or
+when it carries clear scope, rationale, and promotion state.
 
 ## The Dashboard
 
@@ -265,8 +293,11 @@ trust — trust is tracked separately via the A–F grade.
 - **Undo toast** — mutating ops (archive, structure) surface an
   `UNDO` button for ~5 seconds; reverts both run against the backend
 - **A–F grade pills** with bar charts and color coding
+- **Scope and promotion review** — approve for a project, approve for a
+  domain, generalize, keep as evidence only, reject, archive, or mark
+  conflicts/counterexamples
 - **Inline edit, approve, archive, delete, structure, refine** — all
-  mutations persist to the same SQLite store `mojo sync` reads from
+  mutations persist to the same SQLite store `mojo refresh` reads from
 - **Light / dark theme toggle** — persisted in `localStorage`
 - **No build step** — React, ReactDOM, Babel-standalone, and d3 are
   loaded from CDN
@@ -274,23 +305,19 @@ trust — trust is tracked separately via the A–F grade.
 ## Architecture
 
 ```
-T1 · Stored ──┐
+T1 · Tacit  ──┐
   seed import │
   manual entry│
               │
-T2 · Mined  ──┼──► SQLite store ──► Packer ──► CLAUDE.md / SKILL.md
-  git scan    │   (dedup, grades)  (budget)         │
+T2 · Evidence ┼──► SQLite store ──► Retriever ──► MOJO.md advisory context
+  git scan    │   (dedup, grades, scope)             │
   folder scan │         ▲                            ▼
-              │         │                  Next Claude Code session
-T3 · Live   ──┘         │                            │
-  session hook + LLM    │                            │
-  (Haiku filter +       └────── usage feedback ──────┘
-   Sonnet structure)           (reuses, approvals,
-                                cross-references)
+  sessions    ┘         └──── review / usage feedback ┘
 ```
 
-The evidence-based grader sits between the store and the packer, so only
-items that have actually earned trust make it into the final token budget.
+The evidence-based grader and promotion state sit between the store and
+retrieval, so raw or candidate items can be surfaced as evidence without
+being treated as persistent instructions.
 
 ## Storage Layout
 
@@ -320,9 +347,10 @@ of:
    ```bash
    MOJO_HOME=/srv/mojo mojo dashboard --host 0.0.0.0 --port 8765 --no-browser
    ```
-3. **Per-project sidecar** — after a single global `mojo init`, create
-   an empty `.mojo/` directory inside any repo that should keep its
-   own isolated store and CLAUDE.md injections. The session hook
+3. **Per-project attachment** — after a single global `mojo init`, run
+   `mojo attach` inside any repo that should get its own advisory
+   `MOJO.md` context. If you deliberately create a `.mojo/mojo.db`
+   sidecar, the session hook
    walks up from cwd and routes transcripts to the nearest sidecar,
    falling back to the global store everywhere else. See
    [Per-project isolation](#per-project-isolation) for details.
@@ -342,7 +370,7 @@ when a budget is exceeded.
 
 Mojo works without an Anthropic API key. The key only unlocks the
 LLM-powered structuring pipeline; everything else — scanning, storage,
-dashboard, CLAUDE.md generation — runs for free.
+dashboard, MOJO.md advisory generation — runs for free.
 
 | Feature                                  | Without API Key        | With API Key      |
 |------------------------------------------|:----------------------:|:-----------------:|
@@ -350,7 +378,7 @@ dashboard, CLAUDE.md generation — runs for free.
 | Folder scan                              | ✅ Full                | ✅ Same           |
 | Seed import                              | ✅ Full                | ✅ Same           |
 | Dashboard (view / edit / add / delete)   | ✅ Full                | ✅ Same           |
-| CLAUDE.md generation                     | ✅ Full                | ✅ Same           |
+| MOJO.md advisory generation              | ✅ Full                | ✅ Same           |
 | Graph visualization                      | ✅ Full                | ✅ Same           |
 | Session auto-capture (hooks)             | ✅ Registration only   | ✅ Same           |
 | **Session → structured knowledge**       | ❌                     | ✅ Grade A–B      |
@@ -426,8 +454,8 @@ synchronous path when you want immediate results.
 
 ## Roadmap
 
-- [ ] End-to-end auto-pipeline: session hook → `extract` → `sync` as a
-      single trigger
+- [ ] End-to-end advisory pipeline: session hook → `extract` → `refresh`
+      as a single visible trigger
 - [ ] Seed vs. LLM version coexistence — auto-replace shorter seed
       entries when a richer LLM extraction supersedes them
 - [ ] "Sync now" button in the dashboard

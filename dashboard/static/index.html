@@ -92,28 +92,17 @@ const deriveSource = (it) => {
   return "llm-extract";
 };
 
-// Three-tier knowledge model
+// Value/validation tier model. Source lineage is shown separately.
 const TIERS = {
-  T1: { key:"T1", label:"Stored", color:"#A78BFA",
-        desc:"Knowledge you already know",
-        long:"Seeded or manually entered",
-        sources:["memory-seed","manual"] },
-  T2: { key:"T2", label:"Mined",  color:"#FBBF24",
-        desc:"Unearthed from past work",
-        long:"Rule-based git / folder scan",
-        sources:["git-scan"] },
-  T3: { key:"T3", label:"Live",   color:"#34D399",
-        desc:"Captured in real time",
-        long:"Claude Code session + LLM extraction",
-        sources:["llm-extract"] },
+  T1: { key:"T1", label:"Tacit", color:"#A78BFA",
+        desc:"Approved high-value tacit knowledge",
+        long:"Scoped and reviewed guidance" },
+  T2: { key:"T2", label:"Evidence",  color:"#FBBF24",
+        desc:"Raw, candidate, or cheap context",
+        long:"Useful evidence, not a strong rule" },
 };
-const SOURCE_TO_TIER = {
-  "memory-seed": "T1",
-  "manual":      "T1",
-  "git-scan":    "T2",
-  "llm-extract": "T3",
-};
-const tierOf = (it) => SOURCE_TO_TIER[it.source] || "T3";
+const TIER_KEYS = ["T1","T2"];
+const tierOf = (it) => it.tier || ((["project_approved","generalized"].includes(it.promotion_state) && it.approved) ? "T1" : "T2");
 
 const STATUS_META = {
   summary:    { label:"Summary",    icon:"📊", color:"#4ECDC4" },
@@ -153,6 +142,14 @@ const api = {
     fetch(`/api/knowledge/${encodeURIComponent(id)}`, {method:"DELETE"}).then(r => r.json()),
   approve: (id) =>
     fetch(`/api/knowledge/${encodeURIComponent(id)}/approve`, {method:"POST"}).then(r => r.json()),
+  approveDomain: (id) =>
+    fetch(`/api/knowledge/${encodeURIComponent(id)}/approve-domain`, {method:"POST"}).then(r => r.json()),
+  generalize: (id) =>
+    fetch(`/api/knowledge/${encodeURIComponent(id)}/generalize`, {method:"POST"}).then(r => r.json()),
+  evidenceOnly: (id) =>
+    fetch(`/api/knowledge/${encodeURIComponent(id)}/evidence-only`, {method:"POST"}).then(r => r.json()),
+  reject: (id) =>
+    fetch(`/api/knowledge/${encodeURIComponent(id)}/reject`, {method:"POST"}).then(r => r.json()),
   archive: (id) =>
     fetch(`/api/knowledge/${encodeURIComponent(id)}/archive`, {method:"POST"}).then(r => r.json()),
   unarchive: (id) =>
@@ -222,7 +219,7 @@ const TypeBadge = ({ type }) => {
 };
 
 const TierBadge = ({ tier }) => {
-  const t = TIERS[tier] || TIERS.T3;
+  const t = TIERS[tier] || TIERS.T2;
   return (
     <Badge bg={`${t.color}18`} color={t.color} border={`${t.color}30`}>
       {t.key}·{t.label}
@@ -944,7 +941,8 @@ function GraphView({ items, highlightedIds, onSelectNode, onFillReasons, fillLoa
 function AddModal({ onAdd, onClose }) {
   const [form, setForm] = useState({
     title:"", content:"", reasoning:"",
-    type:"domain_rule", domain:"", tags:"", confidence:0.85,
+    type:"domain_rule", domain:"", tags:"", confidence:0.75,
+    scope:"project", applies_when:"", does_not_apply_when:"",
   });
   const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
   const valid = form.title && form.content && form.domain;
@@ -957,8 +955,15 @@ function AddModal({ onAdd, onClose }) {
       title: form.title,
       content: form.content,
       reasoning: form.reasoning,
+      scope: form.scope,
+      applies_when: form.applies_when,
+      does_not_apply_when: form.does_not_apply_when || "Do not generalize beyond the selected scope until reviewed.",
+      evidence_level: form.reasoning ? "local_rule" : "raw_observation",
+      promotion_state: "candidate",
+      review_required: 1,
+      safe_to_generalize: 0,
       confidence: form.confidence,
-      approved: 1,
+      approved: 0,
       source_session_id: "manual",
       tags: form.tags.split(",").map(t => t.trim()).filter(Boolean),
       related_ids: [],
@@ -979,18 +984,30 @@ function AddModal({ onAdd, onClose }) {
       <div onClick={e => e.stopPropagation()} style={{ background:"var(--card)", backdropFilter:"blur(4px)", borderRadius:12, padding:28, width:520, maxHeight:"85vh", overflowY:"auto", border:"1px solid var(--border-strong)", boxShadow:"0 24px 80px rgba(0,0,0,0.4)", color:"var(--text-main)" }}>
         <h2 style={{ margin:"0 0 20px", fontSize:18, fontFamily:"'Outfit',sans-serif", fontWeight:600 }}>🔮 Add Knowledge</h2>
         <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
-            <div>
-              <label style={labelStyle}>Domain *</label>
-              <input value={form.domain} onChange={e => set("domain", e.target.value)} placeholder="electricity/smp" style={inputStyle} />
-            </div>
-            <div>
-              <label style={labelStyle}>Type</label>
-              <select value={form.type} onChange={e => set("type", e.target.value)} style={{ ...inputStyle, cursor:"pointer" }}>
-                {Object.entries(TYPES).map(([k, v]) => <option key={k} value={k}>{v.icon} {v.label}</option>)}
-              </select>
-            </div>
-          </div>
+	          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+	            <div>
+	              <label style={labelStyle}>Domain *</label>
+	              <input value={form.domain} onChange={e => set("domain", e.target.value)} placeholder="electricity/smp" style={inputStyle} />
+	            </div>
+	            <div>
+	              <label style={labelStyle}>Kind</label>
+	              <select value={form.type} onChange={e => set("type", e.target.value)} style={{ ...inputStyle, cursor:"pointer" }}>
+	                {Object.entries(TYPES).map(([k, v]) => <option key={k} value={k}>{v.icon} {v.label}</option>)}
+	              </select>
+	            </div>
+	          </div>
+	          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+	            <div>
+	              <label style={labelStyle}>Scope</label>
+	              <select value={form.scope} onChange={e => set("scope", e.target.value)} style={{ ...inputStyle, cursor:"pointer" }}>
+	                {["project","domain","environment","workflow","incident","user_preference","universal"].map(s => <option key={s} value={s}>{s}</option>)}
+	              </select>
+	            </div>
+	            <div>
+	              <label style={labelStyle}>Confidence ({(form.confidence*100)|0}%)</label>
+	              <input type="range" min="0.3" max="1" step="0.05" value={form.confidence} onChange={e => set("confidence", +e.target.value)} style={{ width:"100%", accentColor:"var(--accent)", marginTop:8 }} />
+	            </div>
+	          </div>
           <div>
             <label style={labelStyle}>Title *</label>
             <input value={form.title} onChange={e => set("title", e.target.value)} placeholder="간결한 규칙 제목" style={inputStyle} />
@@ -999,20 +1016,22 @@ function AddModal({ onAdd, onClose }) {
             <label style={labelStyle}>Content *</label>
             <textarea value={form.content} onChange={e => set("content", e.target.value)} rows={3} placeholder="실행 가능한 규칙/패턴" style={{ ...inputStyle, resize:"vertical" }} />
           </div>
-          <div>
-            <label style={labelStyle}>Reasoning</label>
-            <textarea value={form.reasoning} onChange={e => set("reasoning", e.target.value)} rows={2} placeholder="왜 이 규칙이 필요한지" style={{ ...inputStyle, resize:"vertical" }} />
-          </div>
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
-            <div>
-              <label style={labelStyle}>Tags (comma separated)</label>
-              <input value={form.tags} onChange={e => set("tags", e.target.value)} placeholder="api, database" style={inputStyle} />
-            </div>
-            <div>
-              <label style={labelStyle}>Confidence ({(form.confidence*100)|0}%)</label>
-              <input type="range" min="0.3" max="1" step="0.05" value={form.confidence} onChange={e => set("confidence", +e.target.value)} style={{ width:"100%", accentColor:"var(--accent)", marginTop:8 }} />
-            </div>
-          </div>
+	          <div>
+	            <label style={labelStyle}>Reasoning</label>
+	            <textarea value={form.reasoning} onChange={e => set("reasoning", e.target.value)} rows={2} placeholder="왜 이 규칙이 필요한지" style={{ ...inputStyle, resize:"vertical" }} />
+	          </div>
+	          <div>
+	            <label style={labelStyle}>Applies When</label>
+	            <textarea value={form.applies_when} onChange={e => set("applies_when", e.target.value)} rows={2} placeholder="어떤 프로젝트/상황에서 유효한지" style={{ ...inputStyle, resize:"vertical" }} />
+	          </div>
+	          <div>
+	            <label style={labelStyle}>Does Not Apply When</label>
+	            <textarea value={form.does_not_apply_when} onChange={e => set("does_not_apply_when", e.target.value)} rows={2} placeholder="예외, 반례, 아직 일반화하면 안 되는 조건" style={{ ...inputStyle, resize:"vertical" }} />
+	          </div>
+	          <div>
+	            <label style={labelStyle}>Tags (comma separated)</label>
+	            <input value={form.tags} onChange={e => set("tags", e.target.value)} placeholder="api, database" style={inputStyle} />
+	          </div>
           <div style={{ display:"flex", gap:8, marginTop:4 }}>
             <button onClick={submit} disabled={!valid} style={{ padding:"8px 24px", borderRadius:6, border:"none", background: valid ? "var(--accent)" : "var(--border-strong)", color: valid ? "#0b0b0b" : "var(--text-faint)", fontSize:13, fontWeight:600, cursor: valid ? "pointer" : "not-allowed" }}>Add Knowledge</button>
             <button onClick={onClose} style={{ padding:"8px 20px", borderRadius:6, border:"1px solid var(--border-strong)", background:"transparent", color:"var(--text-mid)", fontSize:13, cursor:"pointer" }}>Cancel</button>
@@ -1079,9 +1098,11 @@ function KCard({
         )}
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap", marginBottom:5 }}>
-            <TypeBadge type={item.type} />
-            <TierBadge tier={tierOf(item)} />
-            {isDetail && <Badge bg="#94A3B818" color="#94A3B8" border="#94A3B830">📋 DETAIL</Badge>}
+	            <TypeBadge type={item.type} />
+	            <TierBadge tier={tierOf(item)} />
+	            <Badge bg="#64748B18" color="#94A3B8" border="#64748B30">{item.scope || "project"}</Badge>
+	            <Badge bg="#64748B18" color="#CBD5E1" border="#64748B30">{(item.promotion_state || "candidate").replace("_", " ")}</Badge>
+	            {isDetail && <Badge bg="#94A3B818" color="#94A3B8" border="#94A3B830">📋 DETAIL</Badge>}
             {isSummary && (item.detail_ids?.length || 0) > 0 &&
               <Badge bg="#4ECDC418" color="#4ECDC4" border="#4ECDC430">📎 {item.detail_ids.length}</Badge>}
             {!item.approved && !isDetail && <span style={{ fontSize:10, color:"#D97706", fontWeight:700 }}>PENDING</span>}
@@ -1112,9 +1133,15 @@ function KCard({
             </div>
           ) : (
             <>
-              <p style={{ margin:"0 0 6px", fontSize:12.5, color:"var(--text-main)", lineHeight:1.55, fontFamily:"'JetBrains Mono',monospace", whiteSpace:"pre-wrap", wordBreak:"break-word", overflowWrap:"break-word" }}>{item.content}</p>
-              {item.reasoning && <p style={{ margin:"0 0 8px", fontSize:11.5, color:"var(--text-mid)", lineHeight:1.45, fontStyle:"italic", borderLeft:"2px solid var(--border-strong)", paddingLeft:9, wordBreak:"break-word", overflowWrap:"break-word", whiteSpace:"pre-wrap" }}>{item.reasoning}</p>}
-              <div style={{ display:"flex", flexWrap:"wrap", gap:3, marginBottom:8 }}>
+	              <p style={{ margin:"0 0 6px", fontSize:12.5, color:"var(--text-main)", lineHeight:1.55, fontFamily:"'JetBrains Mono',monospace", whiteSpace:"pre-wrap", wordBreak:"break-word", overflowWrap:"break-word" }}>{item.content}</p>
+	              {item.reasoning && <p style={{ margin:"0 0 8px", fontSize:11.5, color:"var(--text-mid)", lineHeight:1.45, fontStyle:"italic", borderLeft:"2px solid var(--border-strong)", paddingLeft:9, wordBreak:"break-word", overflowWrap:"break-word", whiteSpace:"pre-wrap" }}>{item.reasoning}</p>}
+	              {(item.applies_when || item.does_not_apply_when) && (
+	                <div style={{ margin:"0 0 8px", padding:"7px 9px", borderRadius:6, border:"1px solid var(--border)", background:"rgba(148,163,184,0.05)", fontSize:10.5, color:"var(--text-mid)", lineHeight:1.45 }}>
+	                  {item.applies_when && <div><b style={{ color:"var(--text-main)" }}>Applies:</b> {item.applies_when}</div>}
+	                  {item.does_not_apply_when && <div><b style={{ color:"var(--text-main)" }}>Limits:</b> {item.does_not_apply_when}</div>}
+	                </div>
+	              )}
+	              <div style={{ display:"flex", flexWrap:"wrap", gap:3, marginBottom:8 }}>
                 {(item.tags || []).map(tag => <span key={tag} style={{ fontSize:9.5, padding:"1px 5px", borderRadius:3, background:"var(--bar-track)", color:"var(--text-mid)" }}>#{tag}</span>)}
               </div>
               {item.lineage && (
@@ -1146,11 +1173,14 @@ function KCard({
                   ))}
                 </div>
               )}
-              <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
-                {isDetail && <button onClick={() => onStructure && onStructure(item.id)} style={{ padding:"4px 12px", borderRadius:4, border:"none", background:"var(--accent)", color:"#0b0b0b", fontSize:11, fontWeight:600, cursor:"pointer" }}>🔄 Structure</button>}
-                {isDetail && <button onClick={() => onRefine && onRefine(item.id)} style={{ padding:"4px 12px", borderRadius:4, border:"1px solid var(--border-strong)", background:"transparent", color:"var(--text-mid)", fontSize:11, cursor:"pointer" }}>✎ Refine manually</button>}
-                {!item.approved && !isDetail && <button onClick={() => onApprove(item.id)} style={{ padding:"4px 12px", borderRadius:4, border:"none", background:"var(--accent)", color:"#0b0b0b", fontSize:11, fontWeight:600, cursor:"pointer" }}>✓ Approve</button>}
-                {!isDetail && <button onClick={() => setEditing(true)} style={{ padding:"4px 12px", borderRadius:4, border:"1px solid var(--border-strong)", background:"transparent", color:"var(--text-mid)", fontSize:11, cursor:"pointer" }}>✎ Edit</button>}
+	              <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
+	                {isDetail && <button onClick={() => onStructure && onStructure(item.id)} style={{ padding:"4px 12px", borderRadius:4, border:"none", background:"var(--accent)", color:"#0b0b0b", fontSize:11, fontWeight:600, cursor:"pointer" }}>🔄 Structure</button>}
+	                {isDetail && <button onClick={() => onRefine && onRefine(item.id)} style={{ padding:"4px 12px", borderRadius:4, border:"1px solid var(--border-strong)", background:"transparent", color:"var(--text-mid)", fontSize:11, cursor:"pointer" }}>✎ Refine manually</button>}
+	                {!isDetail && <button onClick={() => onApprove(item.id, "project")} style={{ padding:"4px 12px", borderRadius:4, border:"none", background:"var(--accent)", color:"#0b0b0b", fontSize:11, fontWeight:600, cursor:"pointer" }}>Project approve</button>}
+	                {!isDetail && <button onClick={() => onApprove(item.id, "domain")} style={{ padding:"4px 12px", borderRadius:4, border:"1px solid var(--border-strong)", background:"transparent", color:"var(--text-mid)", fontSize:11, cursor:"pointer" }}>Domain</button>}
+	                {!isDetail && <button onClick={() => onApprove(item.id, "general")} style={{ padding:"4px 12px", borderRadius:4, border:"1px solid var(--border-strong)", background:"transparent", color:"var(--text-mid)", fontSize:11, cursor:"pointer" }}>General</button>}
+	                {!isDetail && <button onClick={() => onApprove(item.id, "evidence")} style={{ padding:"4px 12px", borderRadius:4, border:"1px solid var(--border-strong)", background:"transparent", color:"var(--text-dim)", fontSize:11, cursor:"pointer" }}>Evidence only</button>}
+	                {!isDetail && <button onClick={() => setEditing(true)} style={{ padding:"4px 12px", borderRadius:4, border:"1px solid var(--border-strong)", background:"transparent", color:"var(--text-mid)", fontSize:11, cursor:"pointer" }}>✎ Edit</button>}
                 <button onClick={() => onArchive(item.id)} style={{ padding:"4px 12px", borderRadius:4, border:"1px solid rgba(217,119,6,0.35)", background:"transparent", color:"#D97706", fontSize:11, cursor:"pointer" }}>📦 Archive</button>
                 <button onClick={() => { if (confirm(`Delete "${item.title}" permanently?`)) onDelete(item.id); }}
                   style={{ padding:"4px 12px", borderRadius:4, border:"1px solid rgba(220,38,38,0.35)", background:"transparent", color:"#DC2626", fontSize:11, cursor:"pointer" }}>🗑 Delete</button>
@@ -1280,7 +1310,14 @@ function MojoDashboard() {
 
   useEffect(() => { refresh(); }, [refresh]);
 
-  const approve = async (id) => { await api.approve(id); flash(`✓ Approved: ${id}`); refresh(); };
+  const approve = async (id, mode="project") => {
+    if (mode === "domain") await api.approveDomain(id);
+    else if (mode === "general") await api.generalize(id);
+    else if (mode === "evidence") await api.evidenceOnly(id);
+    else await api.approve(id);
+    flash(`✓ Review updated: ${id}`);
+    refresh();
+  };
   const archive = async (id) => {
     await api.archive(id);
     refresh();
@@ -1447,7 +1484,7 @@ function MojoDashboard() {
     unlinked:   active.filter(i => statusOf(i) === "detail" && !i.parent_id).length,
   };
 
-  const tierCounts = { T1: 0, T2: 0, T3: 0 };
+  const tierCounts = { T1: 0, T2: 0 };
   active.forEach(i => { tierCounts[tierOf(i)]++; });
 
   const domainTree = {};
@@ -1518,7 +1555,7 @@ function MojoDashboard() {
           ))}
           <div style={{ background:"var(--card)", borderRadius:7, padding:"10px 12px", border:"1px solid var(--border)" }}>
             <div style={{ fontSize:9.5, color:"var(--text-dim)", textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:4 }}>Knowledge Tiers</div>
-            {["T1","T2","T3"].map(k => {
+            {TIER_KEYS.map(k => {
               const t = TIERS[k];
               return (
                 <div key={k} style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", fontSize:10.5, lineHeight:1.35 }}>
@@ -1645,7 +1682,7 @@ function MojoDashboard() {
             <span className="sb-label">All</span>
             <span className="sb-count">{active.length}</span>
           </div>
-          {["T1","T2","T3"].map(k => {
+          {TIER_KEYS.map(k => {
             const t = TIERS[k];
             const cnt = tierCounts[k] || 0;
             const sel = selSources.has(k);

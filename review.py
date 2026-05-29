@@ -11,7 +11,7 @@ from rich.prompt import Prompt, Confirm
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from db_ops import get_db, get_all_knowledge
+from db_ops import get_db, get_all_knowledge, init_db, mark_conflict, set_promotion_state
 
 console = Console()
 
@@ -27,6 +27,7 @@ TYPE_ICONS = {
 
 def review_pending():
     """Interactive review of unapproved knowledge items."""
+    init_db()
     db = get_db()
     items = db.execute(
         "SELECT * FROM knowledge WHERE approved = 0 AND archived = 0 "
@@ -47,37 +48,64 @@ def review_pending():
         console.print(Panel(
             f"[bold]{icon} {item['title']}[/bold]\n"
             f"[dim]ID: {item['id']} | Domain: {item['domain']} | "
-            f"Type: {item['type']} | Confidence: {item['confidence']}[/dim]\n\n"
+            f"Type: {item['type']} | Confidence: {item['confidence']}[/dim]\n"
+            f"[dim]Taxon: {item.get('taxon', '')} | Scope: {item.get('scope', '')} | "
+            f"Evidence: {item.get('evidence_level', '')} | "
+            f"State: {item.get('promotion_state', '')}[/dim]\n\n"
             f"{item['content']}\n\n"
+            f"[bold]Applies when:[/bold] {item.get('applies_when') or 'unspecified'}\n"
+            f"[bold]Does not apply when:[/bold] {item.get('does_not_apply_when') or 'unspecified'}\n\n"
             f"[italic]Reasoning: {item.get('reasoning', 'N/A')}[/italic]",
             title=f"[{i+1}/{len(items)}]",
             border_style="blue",
         ))
 
         action = Prompt.ask(
-            "[a]pprove / [e]dit / [r]eject / [s]kip / [q]uit",
-            choices=["a", "e", "r", "s", "q"],
+            "[p]roject approve / [d]omain approve / [g]eneralize / "
+            "[k]eep evidence / [e]dit / [r]eject / [a]rchive / [s]kip / [q]uit",
+            choices=["p", "d", "g", "k", "e", "r", "a", "s", "q"],
             default="s",
         )
 
-        if action == "a":
-            db.execute("UPDATE knowledge SET approved = 1 WHERE id = ?", (item["id"],))
-            db.commit()
-            console.print("[green]✓ Approved[/green]\n")
+        if action == "p":
+            set_promotion_state(db, item["id"], "project_approved", scope="project")
+            console.print("[green]✓ Approved for this project[/green]\n")
+
+        elif action == "d":
+            set_promotion_state(db, item["id"], "project_approved", scope="domain")
+            console.print("[green]✓ Approved for this domain[/green]\n")
+
+        elif action == "g":
+            set_promotion_state(
+                db, item["id"], "generalized",
+                scope="universal",
+                evidence_level="generalized_principle",
+            )
+            console.print("[green]✓ Approved as generalized guidance[/green]\n")
+
+        elif action == "k":
+            set_promotion_state(db, item["id"], "raw", evidence_level="raw_observation")
+            console.print("[yellow]Kept as evidence only[/yellow]\n")
 
         elif action == "e":
             new_content = Prompt.ask("New content", default=item["content"])
             new_reasoning = Prompt.ask("New reasoning", default=item.get("reasoning", ""))
+            new_applies = Prompt.ask("Applies when", default=item.get("applies_when", ""))
+            new_limits = Prompt.ask("Does not apply when", default=item.get("does_not_apply_when", ""))
             db.execute(
-                "UPDATE knowledge SET content = ?, reasoning = ?, approved = 1 WHERE id = ?",
-                (new_content, new_reasoning, item["id"])
+                "UPDATE knowledge SET content = ?, reasoning = ?, applies_when = ?, "
+                "does_not_apply_when = ?, updated_at = datetime('now') WHERE id = ?",
+                (new_content, new_reasoning, new_applies, new_limits, item["id"])
             )
             db.commit()
-            console.print("[green]✓ Updated & approved[/green]\n")
+            console.print("[green]✓ Updated; choose a promotion action next time[/green]\n")
 
         elif action == "r":
-            db.execute("UPDATE knowledge SET archived = 1 WHERE id = ?", (item["id"],))
-            db.commit()
+            set_promotion_state(db, item["id"], "rejected")
+            console.print("[red]✗ Rejected[/red]\n")
+
+        elif action == "a":
+            set_promotion_state(db, item["id"], "archived")
             console.print("[red]✗ Archived[/red]\n")
 
         elif action == "q":
@@ -89,6 +117,7 @@ def review_pending():
 def list_knowledge(domain: str = None, type_filter: str = None,
                    approved_only: bool = False):
     """List knowledge items in a table."""
+    init_db()
     db = get_db()
 
     query = "SELECT * FROM knowledge WHERE archived = 0"
@@ -118,6 +147,8 @@ def list_knowledge(domain: str = None, type_filter: str = None,
     table.add_column("Type", width=12)
     table.add_column("Title", width=35)
     table.add_column("Conf", justify="right", width=5)
+    table.add_column("Scope", width=12)
+    table.add_column("State", width=16)
     table.add_column("Used", justify="right", width=5)
     table.add_column("✓", width=2)
 
@@ -131,6 +162,8 @@ def list_knowledge(domain: str = None, type_filter: str = None,
             f"{icon} {row['type'][:10]}",
             row["title"][:35],
             f"{row['confidence']:.2f}",
+            row.get("scope", "")[:12],
+            row.get("promotion_state", "")[:16],
             str(row["usage_count"]),
             approved,
         )
@@ -152,9 +185,15 @@ def main():
 
     approve_p = sub.add_parser("approve", help="Approve item by ID")
     approve_p.add_argument("item_id", help="Knowledge item ID")
+    approve_p.add_argument("--scope", choices=["project", "domain", "universal"],
+                           default="project")
 
     reject_p = sub.add_parser("reject", help="Archive item by ID")
     reject_p.add_argument("item_id", help="Knowledge item ID")
+
+    conflict_p = sub.add_parser("conflict", help="Mark two items as conflicting")
+    conflict_p.add_argument("item_id")
+    conflict_p.add_argument("conflict_id")
 
     args = parser.parse_args()
 
@@ -163,17 +202,32 @@ def main():
     elif args.cmd == "list":
         list_knowledge(args.domain, args.type_filter, args.approved)
     elif args.cmd == "approve":
+        init_db()
         db = get_db()
-        db.execute("UPDATE knowledge SET approved = 1 WHERE id = ?", (args.item_id,))
-        db.commit()
+        if args.scope == "universal":
+            set_promotion_state(
+                db, args.item_id, "generalized",
+                scope="universal",
+                evidence_level="generalized_principle",
+            )
+        else:
+            set_promotion_state(db, args.item_id, "project_approved", scope=args.scope)
         db.close()
-        console.print(f"[green]✓ Approved: {args.item_id}[/green]")
+        console.print(f"[green]✓ Approved ({args.scope}): {args.item_id}[/green]")
     elif args.cmd == "reject":
+        init_db()
         db = get_db()
-        db.execute("UPDATE knowledge SET archived = 1 WHERE id = ?", (args.item_id,))
-        db.commit()
+        set_promotion_state(db, args.item_id, "rejected")
         db.close()
-        console.print(f"[red]✗ Archived: {args.item_id}[/red]")
+        console.print(f"[red]✗ Rejected: {args.item_id}[/red]")
+    elif args.cmd == "conflict":
+        init_db()
+        db = get_db()
+        mark_conflict(db, args.item_id, args.conflict_id)
+        db.close()
+        console.print(
+            f"[yellow]Marked conflict:[/yellow] {args.item_id} ↔ {args.conflict_id}"
+        )
 
 
 if __name__ == "__main__":

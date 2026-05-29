@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import sqlite3
 from pathlib import Path
 from datetime import datetime
@@ -41,6 +42,72 @@ CONFIDENCE_GRADES = {
 }
 
 GRADE_ORDER = ["A", "B", "C", "D", "F"]
+
+VALID_SCOPES = {
+    "universal",
+    "domain",
+    "project",
+    "environment",
+    "workflow",
+    "incident",
+    "user_preference",
+}
+
+VALID_TAXA = {
+    "implementation_pattern",
+    "debugging_pattern",
+    "evaluation_rule",
+    "leakage_warning",
+    "environment_constraint",
+    "project_convention",
+    "user_preference",
+    "decision_rationale",
+    "anti_pattern",
+    "tool_usage_rule",
+    "deployment_note",
+    "research_hypothesis",
+    "unresolved_question",
+}
+
+VALID_EVIDENCE_LEVELS = {
+    "raw_observation",
+    "local_rule",
+    "generalized_principle",
+    "policy",
+}
+
+VALID_PROMOTION_STATES = {
+    "raw",
+    "candidate",
+    "project_approved",
+    "generalized",
+    "rejected",
+    "archived",
+}
+
+TAXON_BY_TYPE = {
+    "domain_rule": "evaluation_rule",
+    "architecture_decision": "decision_rationale",
+    "debug_playbook": "debugging_pattern",
+    "anti_pattern": "anti_pattern",
+    "tool_preference": "tool_usage_rule",
+    "code_pattern": "implementation_pattern",
+}
+
+PROMOTION_TIER = {
+    "raw": "T2",
+    "candidate": "T2",
+    "project_approved": "T1",
+    "generalized": "T1",
+    "rejected": "T2",
+    "archived": "T2",
+}
+
+_STRONG_RULE_PATTERN = re.compile(
+    r"\b(always|never|must|required|only|do not|don't)\b|"
+    r"(항상|절대|반드시|무조건)",
+    re.IGNORECASE,
+)
 
 
 def evidence_based_grade(item: dict) -> str:
@@ -96,6 +163,176 @@ def evidence_based_grade(item: dict) -> str:
     return "C"
 
 
+def _json_or_default(value, default):
+    if value in (None, ""):
+        return default
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return default
+    return value
+
+
+def _infer_source_lineage(item: dict) -> dict:
+    source = item.get("source_session_id", "") or ""
+    lineage = {
+        "kind": "unknown",
+        "ref": source or "unknown",
+    }
+    if source.startswith("git-scan-"):
+        lineage = {
+            "kind": "commit",
+            "ref": source.replace("git-scan-", ""),
+        }
+    elif source.startswith("manual"):
+        lineage = {"kind": "manual_note", "ref": source}
+    elif source.startswith("memory-seed") or source.startswith("seed"):
+        lineage = {"kind": "manual_seed", "ref": source}
+    elif source.startswith("structured-from-"):
+        lineage = {"kind": "review_action", "ref": source}
+    elif source:
+        lineage = {"kind": "session", "ref": source}
+
+    project_path = item.get("project_path") or ""
+    if project_path:
+        lineage["project_path"] = project_path
+    return lineage
+
+
+def _infer_scope(item: dict) -> str:
+    source = item.get("source_session_id", "") or ""
+    project_path = item.get("project_path") or ""
+    domain = item.get("domain", "") or ""
+    taxon = item.get("taxon", "") or ""
+    if taxon == "user_preference":
+        return "user_preference"
+    if project_path or domain.startswith("project/") or source.startswith("git-scan-"):
+        return "project"
+    if source and not source.startswith(("manual", "memory-seed", "seed")):
+        return "project"
+    return "domain"
+
+
+def _infer_evidence_level(item: dict) -> str:
+    source = item.get("source_session_id", "") or ""
+    status = item.get("status", "")
+    if source.startswith("git-scan-") or status == "detail":
+        return "raw_observation"
+    if item.get("approved") and item.get("reasoning"):
+        return "local_rule"
+    return "raw_observation"
+
+
+def _infer_promotion_state(item: dict) -> str:
+    if item.get("archived"):
+        return "archived"
+    source = item.get("source_session_id", "") or ""
+    if source.startswith("git-scan-") or item.get("status") == "detail":
+        return "raw"
+    if item.get("approved") and item.get("reasoning") and item.get("applies_when"):
+        if item.get("scope") == "universal" and item.get("safe_to_generalize"):
+            return "generalized"
+        return "project_approved"
+    return "candidate"
+
+
+def _append_condition(existing: str, note: str) -> str:
+    existing = (existing or "").strip()
+    if not existing:
+        return note
+    if note in existing:
+        return existing
+    return f"{existing} {note}"
+
+
+def normalize_knowledge_item(item: dict) -> dict:
+    """Fill scoped tacit-knowledge fields with conservative defaults.
+
+    The old schema stored confidence and approval but not applicability.
+    Defaults intentionally keep legacy and mined items as candidates/raw
+    evidence unless the item carries explicit scope, conditions, and review.
+    """
+    out = dict(item)
+
+    out["taxon"] = out.get("taxon") or TAXON_BY_TYPE.get(
+        out.get("type", ""), "implementation_pattern"
+    )
+    if out["taxon"] not in VALID_TAXA:
+        out["taxon"] = TAXON_BY_TYPE.get(out.get("type", ""), "implementation_pattern")
+
+    out["scope"] = out.get("scope") or _infer_scope(out)
+    if out["scope"] not in VALID_SCOPES:
+        out["scope"] = _infer_scope(out)
+
+    out["applies_when"] = (out.get("applies_when") or "").strip()
+    out["does_not_apply_when"] = (out.get("does_not_apply_when") or "").strip()
+    out["evidence_level"] = out.get("evidence_level") or _infer_evidence_level(out)
+    if out["evidence_level"] not in VALID_EVIDENCE_LEVELS:
+        out["evidence_level"] = _infer_evidence_level(out)
+
+    out["project_path"] = out.get("project_path") or None
+    out["source_lineage"] = _json_or_default(
+        out.get("source_lineage"), _infer_source_lineage(out)
+    )
+    if not isinstance(out["source_lineage"], dict) or not out["source_lineage"]:
+        out["source_lineage"] = _infer_source_lineage(out)
+    out["evidence_excerpt"] = out.get("evidence_excerpt") or ""
+    out["counterexamples"] = _json_or_default(out.get("counterexamples"), [])
+    if not isinstance(out["counterexamples"], list):
+        out["counterexamples"] = []
+    out["conflicts_with"] = _json_or_default(out.get("conflicts_with"), [])
+    if not isinstance(out["conflicts_with"], list):
+        out["conflicts_with"] = []
+
+    out["safe_to_generalize"] = int(bool(out.get("safe_to_generalize", 0)))
+    out["promotion_state"] = out.get("promotion_state") or _infer_promotion_state(out)
+    if out["promotion_state"] not in VALID_PROMOTION_STATES:
+        out["promotion_state"] = _infer_promotion_state(out)
+
+    strong_rule = bool(_STRONG_RULE_PATTERN.search(
+        f"{out.get('title', '')}\n{out.get('content', '')}"
+    ))
+    generalized_enough = (
+        out["promotion_state"] == "generalized"
+        and out["evidence_level"] in {"generalized_principle", "policy"}
+        and bool(out.get("approved"))
+        and bool(out["safe_to_generalize"])
+    )
+    if strong_rule and out["scope"] == "universal" and not generalized_enough:
+        out["scope"] = "domain"
+        out["promotion_state"] = "candidate"
+        out["safe_to_generalize"] = 0
+        out["does_not_apply_when"] = _append_condition(
+            out["does_not_apply_when"],
+            "Do not treat this as universal until a reviewer approves it as generalized.",
+        )
+
+    reviewed_states = {"project_approved", "generalized", "rejected", "archived"}
+    out["review_required"] = int(out.get(
+        "review_required",
+        0 if out["promotion_state"] in reviewed_states else 1,
+    ))
+    if out["promotion_state"] not in reviewed_states:
+        out["review_required"] = 1
+
+    if out["promotion_state"] == "archived":
+        out["archived"] = 1
+    return out
+
+
+def knowledge_tier(item: dict) -> str:
+    """Return value/validation tier, not source tier."""
+    state = item.get("promotion_state") or "candidate"
+    tier = PROMOTION_TIER.get(state, "T2")
+    if tier == "T1":
+        has_scope = bool(item.get("scope"))
+        has_conditions = bool(item.get("applies_when") or item.get("reasoning"))
+        if not (item.get("approved") and has_scope and has_conditions):
+            return "T2"
+    return tier
+
+
 def get_db(db_path: Optional[Path] = None) -> sqlite3.Connection:
     """Get database connection, creating schema if needed."""
     path = db_path or DB_PATH
@@ -120,6 +357,19 @@ def init_db(db_path: Optional[Path] = None):
         ("parent_id",         "TEXT"),
         ("detail_ids",        "TEXT DEFAULT '[]'"),
         ("related_scores",    "TEXT DEFAULT '{}'"),
+        ("taxon",             "TEXT DEFAULT 'implementation_pattern'"),
+        ("scope",             "TEXT DEFAULT 'project'"),
+        ("applies_when",      "TEXT DEFAULT ''"),
+        ("does_not_apply_when", "TEXT DEFAULT ''"),
+        ("evidence_level",    "TEXT DEFAULT 'raw_observation'"),
+        ("promotion_state",   "TEXT DEFAULT 'candidate'"),
+        ("project_path",      "TEXT"),
+        ("source_lineage",    "TEXT DEFAULT '{}'"),
+        ("evidence_excerpt",  "TEXT DEFAULT ''"),
+        ("counterexamples",   "TEXT DEFAULT '[]'"),
+        ("conflicts_with",    "TEXT DEFAULT '[]'"),
+        ("review_required",   "INTEGER DEFAULT 1"),
+        ("safe_to_generalize", "INTEGER DEFAULT 0"),
     ]
     status_added = False
     for col, ddl in migrations:
@@ -162,6 +412,16 @@ def init_db(db_path: Optional[Path] = None):
              WHERE source_session_id LIKE 'git-scan%'
                AND status = 'standalone'
         """)
+
+    db.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_scope ON knowledge(scope)")
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_knowledge_promotion_state "
+        "ON knowledge(promotion_state)"
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_knowledge_project_path "
+        "ON knowledge(project_path)"
+    )
     db.commit()
     db.close()
 
@@ -178,27 +438,55 @@ def register_session(db: sqlite3.Connection, session_id: str,
 
 def save_knowledge(db: sqlite3.Connection, item: dict):
     """Save a knowledge item to the database."""
+    item = normalize_knowledge_item(item)
     related_reasoning = item.get("related_reasoning", {})
     if not isinstance(related_reasoning, str):
         related_reasoning = json.dumps(related_reasoning, ensure_ascii=False)
     related_scores = item.get("related_scores", {})
     if not isinstance(related_scores, str):
         related_scores = json.dumps(related_scores, ensure_ascii=False)
+    source_lineage = item.get("source_lineage", {})
+    if not isinstance(source_lineage, str):
+        source_lineage = json.dumps(source_lineage, ensure_ascii=False)
+    counterexamples = item.get("counterexamples", [])
+    if not isinstance(counterexamples, str):
+        counterexamples = json.dumps(counterexamples, ensure_ascii=False)
+    conflicts_with = item.get("conflicts_with", [])
+    if not isinstance(conflicts_with, str):
+        conflicts_with = json.dumps(conflicts_with, ensure_ascii=False)
     db.execute("""
         INSERT OR REPLACE INTO knowledge
-        (id, type, domain, title, content, reasoning, confidence,
-         source_session_id, related_ids, related_reasoning, related_scores,
-         tags, usage_count, approved, status, parent_id, detail_ids, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, type, taxon, domain, title, content, reasoning,
+         scope, applies_when, does_not_apply_when, evidence_level,
+         promotion_state, project_path, source_lineage, evidence_excerpt,
+         counterexamples, conflicts_with, review_required, safe_to_generalize,
+         confidence, source_session_id, related_ids, related_reasoning,
+         related_scores, tags, usage_count, approved, archived, status,
+         parent_id, detail_ids, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
-        item["id"], item["type"], item["domain"], item["title"],
-        item["content"], item.get("reasoning", ""),
+        item["id"], item["type"], item.get("taxon", "implementation_pattern"),
+        item["domain"], item["title"], item["content"], item.get("reasoning", ""),
+        item.get("scope", "project"),
+        item.get("applies_when", ""),
+        item.get("does_not_apply_when", ""),
+        item.get("evidence_level", "raw_observation"),
+        item.get("promotion_state", "candidate"),
+        item.get("project_path"),
+        source_lineage,
+        item.get("evidence_excerpt", ""),
+        counterexamples,
+        conflicts_with,
+        int(bool(item.get("review_required", 1))),
+        int(bool(item.get("safe_to_generalize", 0))),
         item.get("confidence", 0.5), item.get("source_session_id", ""),
         json.dumps(item.get("related_ids", []), ensure_ascii=False),
         related_reasoning,
         related_scores,
         json.dumps(item.get("tags", []), ensure_ascii=False),
         item.get("usage_count", 0), item.get("approved", 0),
+        item.get("archived", 0),
         item.get("status", "standalone"),
         item.get("parent_id"),
         json.dumps(item.get("detail_ids", []), ensure_ascii=False),
@@ -337,6 +625,12 @@ def get_stats(db: sqlite3.Connection) -> dict:
     by_domain = db.execute(
         "SELECT domain, COUNT(*) as cnt FROM knowledge WHERE archived=0 GROUP BY domain ORDER BY cnt DESC"
     ).fetchall()
+    by_scope = db.execute(
+        "SELECT scope, COUNT(*) as cnt FROM knowledge WHERE archived=0 GROUP BY scope"
+    ).fetchall()
+    by_promotion = db.execute(
+        "SELECT promotion_state, COUNT(*) as cnt FROM knowledge WHERE archived=0 GROUP BY promotion_state"
+    ).fetchall()
     total_cost = db.execute(
         "SELECT COALESCE(SUM(cost_usd), 0) FROM extraction_costs"
     ).fetchone()[0]
@@ -348,6 +642,10 @@ def get_stats(db: sqlite3.Connection) -> dict:
         "total_knowledge": total,
         "by_type": {r["type"]: r["cnt"] for r in by_type},
         "by_domain": {r["domain"]: r["cnt"] for r in by_domain},
+        "by_scope": {r["scope"] or "unspecified": r["cnt"] for r in by_scope},
+        "by_promotion_state": {
+            r["promotion_state"] or "candidate": r["cnt"] for r in by_promotion
+        },
         "total_extraction_cost_usd": round(total_cost, 4),
         "total_usage_count": total_usage,
     }
@@ -355,18 +653,20 @@ def get_stats(db: sqlite3.Connection) -> dict:
 
 def _row_to_dict(row) -> dict:
     d = dict(row)
-    for field in ("related_ids", "tags", "detail_ids"):
+    for field in ("related_ids", "tags", "detail_ids", "counterexamples", "conflicts_with"):
         if field in d and isinstance(d[field], str):
             try:
                 d[field] = json.loads(d[field])
             except (json.JSONDecodeError, TypeError):
                 d[field] = []
-    for obj_field in ("related_reasoning", "related_scores"):
+    for obj_field in ("related_reasoning", "related_scores", "source_lineage"):
         if obj_field in d and isinstance(d[obj_field], str):
             try:
                 d[obj_field] = json.loads(d[obj_field])
             except (json.JSONDecodeError, TypeError):
                 d[obj_field] = {}
+    d = normalize_knowledge_item(d)
+    d["tier"] = knowledge_tier(d)
     return d
 
 
@@ -376,7 +676,8 @@ def get_summaries(db: sqlite3.Connection,
     """Fetch top-layer items (summary + standalone) for CLAUDE.md injection."""
     query = ("SELECT * FROM knowledge WHERE archived = 0 "
              "AND status IN ('summary', 'standalone') "
-             "AND confidence >= ?")
+             "AND confidence >= ? "
+             "AND promotion_state NOT IN ('raw', 'candidate', 'rejected')")
     if approved_only:
         query += " AND approved = 1"
     query += " ORDER BY domain, confidence DESC"
@@ -427,4 +728,82 @@ def link_detail_to_summary(db: sqlite3.Connection,
                 "WHERE id = ?",
                 (json.dumps(ids, ensure_ascii=False), summary_id),
             )
+    db.commit()
+
+
+def set_promotion_state(db: sqlite3.Connection, knowledge_id: str,
+                        promotion_state: str, scope: str | None = None,
+                        evidence_level: str | None = None):
+    """Apply a review transition while keeping tier/scope semantics explicit."""
+    if promotion_state not in VALID_PROMOTION_STATES:
+        raise ValueError(f"Invalid promotion_state: {promotion_state}")
+    if scope is not None and scope not in VALID_SCOPES:
+        raise ValueError(f"Invalid scope: {scope}")
+    if evidence_level is not None and evidence_level not in VALID_EVIDENCE_LEVELS:
+        raise ValueError(f"Invalid evidence_level: {evidence_level}")
+
+    approved = 1 if promotion_state in {"project_approved", "generalized"} else 0
+    archived = 1 if promotion_state == "archived" else 0
+    review_required = 0 if promotion_state in {
+        "project_approved", "generalized", "rejected", "archived"
+    } else 1
+    safe_to_generalize = 1 if promotion_state == "generalized" else 0
+
+    if promotion_state == "project_approved" and scope is None:
+        scope = "project"
+    if promotion_state == "generalized" and scope is None:
+        scope = "universal"
+    if promotion_state == "generalized" and evidence_level is None:
+        evidence_level = "generalized_principle"
+    if promotion_state == "raw" and evidence_level is None:
+        evidence_level = "raw_observation"
+
+    assignments = [
+        "promotion_state = ?",
+        "approved = ?",
+        "archived = ?",
+        "review_required = ?",
+        "safe_to_generalize = ?",
+        "updated_at = ?",
+    ]
+    params: list = [
+        promotion_state,
+        approved,
+        archived,
+        review_required,
+        safe_to_generalize,
+        datetime.now().isoformat(),
+    ]
+    if scope is not None:
+        assignments.append("scope = ?")
+        params.append(scope)
+    if evidence_level is not None:
+        assignments.append("evidence_level = ?")
+        params.append(evidence_level)
+    params.append(knowledge_id)
+    db.execute(
+        f"UPDATE knowledge SET {', '.join(assignments)} WHERE id = ?",
+        params,
+    )
+    db.commit()
+
+
+def mark_conflict(db: sqlite3.Connection, knowledge_id: str,
+                  conflict_id: str):
+    """Mark two knowledge items as conflicting with each other."""
+    for item_id, other_id in ((knowledge_id, conflict_id), (conflict_id, knowledge_id)):
+        row = db.execute(
+            "SELECT conflicts_with FROM knowledge WHERE id = ?", (item_id,)
+        ).fetchone()
+        if not row:
+            continue
+        conflicts = _json_or_default(row["conflicts_with"], [])
+        if not isinstance(conflicts, list):
+            conflicts = []
+        if other_id not in conflicts:
+            conflicts.append(other_id)
+        db.execute(
+            "UPDATE knowledge SET conflicts_with = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(conflicts, ensure_ascii=False), datetime.now().isoformat(), item_id),
+        )
     db.commit()

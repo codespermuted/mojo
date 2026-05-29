@@ -29,7 +29,11 @@ from db_ops import (  # noqa: E402
     init_db,
     link_detail_to_summary,
     log_extraction_cost,
+    knowledge_tier,
+    mark_conflict,
+    normalize_knowledge_item,
     save_knowledge,
+    set_promotion_state,
 )
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -42,10 +46,23 @@ app = FastAPI(title="Mojo Dashboard", version="0.1.0")
 class KnowledgeIn(BaseModel):
     id: Optional[str] = None
     type: str
+    taxon: Optional[str] = ""
     domain: str
     title: str
     content: str
     reasoning: Optional[str] = ""
+    scope: str = "project"
+    applies_when: Optional[str] = ""
+    does_not_apply_when: Optional[str] = ""
+    evidence_level: str = "raw_observation"
+    promotion_state: str = "candidate"
+    project_path: Optional[str] = None
+    source_lineage: dict = {}
+    evidence_excerpt: Optional[str] = ""
+    counterexamples: list[str] = []
+    conflicts_with: list[str] = []
+    review_required: int = 1
+    safe_to_generalize: int = 0
     confidence: float = 0.85
     tags: list[str] = []
     related_ids: list[str] = []
@@ -64,6 +81,19 @@ class KnowledgeUpdate(BaseModel):
     related_ids: Optional[list[str]] = None
     domain: Optional[str] = None
     type: Optional[str] = None
+    taxon: Optional[str] = None
+    scope: Optional[str] = None
+    applies_when: Optional[str] = None
+    does_not_apply_when: Optional[str] = None
+    evidence_level: Optional[str] = None
+    promotion_state: Optional[str] = None
+    project_path: Optional[str] = None
+    source_lineage: Optional[dict] = None
+    evidence_excerpt: Optional[str] = None
+    counterexamples: Optional[list[str]] = None
+    conflicts_with: Optional[list[str]] = None
+    review_required: Optional[int] = None
+    safe_to_generalize: Optional[int] = None
     status: Optional[str] = None
     parent_id: Optional[str] = None
 
@@ -125,21 +155,23 @@ def _build_lineage(item: dict, sessions_map: dict | None = None) -> dict:
 
 def _row_to_dict(row, sessions_map: dict | None = None) -> dict:
     d = dict(row)
-    for field in ("related_ids", "tags", "detail_ids"):
+    for field in ("related_ids", "tags", "detail_ids", "counterexamples", "conflicts_with"):
         raw = d.get(field)
         if isinstance(raw, str):
             try:
                 d[field] = json.loads(raw)
             except (json.JSONDecodeError, TypeError):
                 d[field] = []
-    for obj_field in ("related_reasoning", "related_scores"):
+    for obj_field in ("related_reasoning", "related_scores", "source_lineage"):
         raw = d.get(obj_field)
         if isinstance(raw, str):
             try:
                 d[obj_field] = json.loads(raw)
             except (json.JSONDecodeError, TypeError):
                 d[obj_field] = {}
+    d = normalize_knowledge_item(d)
     d["grade"] = evidence_based_grade(d)
+    d["tier"] = knowledge_tier(d)
     d["lineage"] = _build_lineage(d, sessions_map)
     return d
 
@@ -192,10 +224,23 @@ def create_knowledge(item: KnowledgeIn):
     payload = {
         "id": kid,
         "type": item.type,
+        "taxon": item.taxon,
         "domain": item.domain,
         "title": item.title,
         "content": item.content,
         "reasoning": item.reasoning or "",
+        "scope": item.scope,
+        "applies_when": item.applies_when or "",
+        "does_not_apply_when": item.does_not_apply_when or "",
+        "evidence_level": item.evidence_level,
+        "promotion_state": item.promotion_state,
+        "project_path": item.project_path,
+        "source_lineage": item.source_lineage,
+        "evidence_excerpt": item.evidence_excerpt or "",
+        "counterexamples": item.counterexamples,
+        "conflicts_with": item.conflicts_with,
+        "review_required": item.review_required,
+        "safe_to_generalize": item.safe_to_generalize,
         "confidence": item.confidence,
         "source_session_id": item.source_session_id,
         "related_ids": item.related_ids,
@@ -224,7 +269,7 @@ def update_knowledge(kid: str, patch: KnowledgeUpdate):
     set_parts = []
     values = []
     for k, v in fields.items():
-        if k in ("related_ids", "tags"):
+        if k in ("related_ids", "tags", "counterexamples", "conflicts_with", "source_lineage"):
             v = json.dumps(v, ensure_ascii=False)
         set_parts.append(f"{k} = ?")
         values.append(v)
@@ -260,11 +305,61 @@ def delete_knowledge(kid: str):
 def approve_knowledge(kid: str):
     db = get_db()
     try:
-        db.execute(
-            "UPDATE knowledge SET approved = 1, updated_at = ? WHERE id = ?",
-            (datetime.now().isoformat(), kid),
+        set_promotion_state(db, kid, "project_approved", scope="project")
+    finally:
+        db.close()
+    return _fetch_one(kid)
+
+
+@app.post("/api/knowledge/{kid}/approve-domain")
+def approve_domain_knowledge(kid: str):
+    db = get_db()
+    try:
+        set_promotion_state(db, kid, "project_approved", scope="domain")
+    finally:
+        db.close()
+    return _fetch_one(kid)
+
+
+@app.post("/api/knowledge/{kid}/generalize")
+def generalize_knowledge(kid: str):
+    db = get_db()
+    try:
+        set_promotion_state(
+            db, kid, "generalized",
+            scope="universal",
+            evidence_level="generalized_principle",
         )
-        db.commit()
+    finally:
+        db.close()
+    return _fetch_one(kid)
+
+
+@app.post("/api/knowledge/{kid}/evidence-only")
+def keep_evidence_only(kid: str):
+    db = get_db()
+    try:
+        set_promotion_state(db, kid, "raw", evidence_level="raw_observation")
+    finally:
+        db.close()
+    return _fetch_one(kid)
+
+
+@app.post("/api/knowledge/{kid}/reject")
+def reject_knowledge(kid: str):
+    db = get_db()
+    try:
+        set_promotion_state(db, kid, "rejected")
+    finally:
+        db.close()
+    return _fetch_one(kid)
+
+
+@app.post("/api/knowledge/{kid}/conflict/{conflict_id}")
+def mark_knowledge_conflict(kid: str, conflict_id: str):
+    db = get_db()
+    try:
+        mark_conflict(db, kid, conflict_id)
     finally:
         db.close()
     return _fetch_one(kid)
@@ -381,11 +476,7 @@ async def update_related_reasoning(kid: str, related_id: str, request: Request):
 def archive_knowledge(kid: str):
     db = get_db()
     try:
-        db.execute(
-            "UPDATE knowledge SET archived = 1, updated_at = ? WHERE id = ?",
-            (datetime.now().isoformat(), kid),
-        )
-        db.commit()
+        set_promotion_state(db, kid, "archived")
     finally:
         db.close()
     return _fetch_one(kid)
@@ -396,7 +487,8 @@ def unarchive_knowledge(kid: str):
     db = get_db()
     try:
         db.execute(
-            "UPDATE knowledge SET archived = 0, updated_at = ? WHERE id = ?",
+            "UPDATE knowledge SET archived = 0, promotion_state = 'candidate', "
+            "review_required = 1, updated_at = ? WHERE id = ?",
             (datetime.now().isoformat(), kid),
         )
         db.commit()
@@ -479,7 +571,7 @@ def _structure_details(detail_ids: list[str]) -> dict:
             "ALL detail items above.\n\n"
             "Rules:\n"
             "1. title: Clear imperative, under 50 chars\n"
-            "2. content: Actionable rule/pattern, under 150 words. Self-contained.\n"
+            "2. content: Scoped advisory rule/pattern, under 150 words. Self-contained.\n"
             "3. reasoning: Why this matters, under 80 words\n"
             "4. tags: 3-7 domain-specific tags\n"
             "5. domain: Infer from detail items\n"
@@ -487,8 +579,13 @@ def _structure_details(detail_ids: list[str]) -> dict:
             "anti_pattern | tool_preference | code_pattern\n"
             "7. related_ids: From existing knowledge list, items sharing domain context\n"
             "8. related_reasoning: {id: one-sentence reason} per related item\n"
-            "9. supersedes: id of a standalone item this replaces, or null\n\n"
+            "9. supersedes: id of a standalone item this replaces, or null\n"
+            "10. taxon, scope, applies_when, does_not_apply_when, evidence_level, "
+            "promotion_state, safe_to_generalize, counterexamples, conflicts_with\n"
+            "Do not produce universal Always/Never guidance unless the details prove it.\n\n"
             "Return ONLY JSON with keys: title, content, reasoning, type, domain, "
+            "taxon, scope, applies_when, does_not_apply_when, evidence_level, "
+            "promotion_state, safe_to_generalize, counterexamples, conflicts_with, "
             "tags, confidence (0-1), related_ids, related_reasoning, supersedes."
         )
 
@@ -517,16 +614,33 @@ def _structure_details(detail_ids: list[str]) -> dict:
         summary = {
             "id": summary_id,
             "type": result.get("type", details[0]["type"]),
+            "taxon": result.get("taxon", details[0].get("taxon", "")),
             "domain": result.get("domain", details[0]["domain"]),
             "title": result["title"],
             "content": result["content"],
             "reasoning": result.get("reasoning", ""),
+            "scope": result.get("scope", details[0].get("scope", "project")),
+            "applies_when": result.get("applies_when", ""),
+            "does_not_apply_when": result.get("does_not_apply_when", ""),
+            "evidence_level": result.get("evidence_level", "local_rule"),
+            "promotion_state": result.get("promotion_state", "candidate"),
+            "project_path": details[0].get("project_path"),
+            "source_lineage": {
+                "kind": "review_action",
+                "ref": f"structured-from-{len(details)}-details",
+                "detail_ids": detail_ids,
+            },
+            "evidence_excerpt": detail_text[:4000],
+            "counterexamples": result.get("counterexamples", []),
+            "conflicts_with": result.get("conflicts_with", []),
+            "review_required": 1,
+            "safe_to_generalize": 1 if result.get("safe_to_generalize") else 0,
             "confidence": confidence,
             "source_session_id": f"structured-from-{len(details)}-details",
             "related_ids": result.get("related_ids", []),
             "related_reasoning": result.get("related_reasoning", {}),
             "tags": result.get("tags", []),
-            "approved": 1 if confidence >= 0.9 else 0,
+            "approved": 0,
             "status": "summary",
             "detail_ids": detail_ids,
             "parent_id": None,

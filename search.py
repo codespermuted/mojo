@@ -10,7 +10,7 @@ from rich.panel import Panel
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from db_ops import get_db
+from db_ops import get_db, init_db
 
 console = Console()
 
@@ -23,6 +23,7 @@ TYPE_ICONS = {
 
 def search(query: str, domain: str = None, type_filter: str = None):
     """Search knowledge by keyword in title/content/tags."""
+    init_db()
     db = get_db()
 
     sql = """
@@ -62,6 +63,8 @@ def search(query: str, domain: str = None, type_filter: str = None):
             f"{tag_str}",
             title=f"{icon} {row['title']}{approved}",
             subtitle=f"[dim]{row['domain']} | conf={row['confidence']:.2f} | "
+                     f"scope={row.get('scope', 'project')} | "
+                     f"state={row.get('promotion_state', 'candidate')} | "
                      f"used={row['usage_count']}[/dim]",
             border_style="blue" if row["approved"] else "dim",
         ))

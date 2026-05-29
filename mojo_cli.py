@@ -13,6 +13,10 @@ from importlib import import_module
 COMMANDS: dict[str, tuple[str, str, str]] = {
     # name           (module,              fn,     one-line help)
     "init":         ("init",              "main", "Create ~/.mojo, copy config, register Claude Code hooks"),
+    "attach":       ("advisory",          "attach_main", "Attach Mojo advisory metadata to this project"),
+    "detach":       ("advisory",          "detach_main", "Detach Mojo advisory metadata from this project"),
+    "status":       ("advisory",          "status_main", "Show project attachment and advisory status"),
+    "refresh":      ("advisory",          "refresh_main", "Regenerate project MOJO.md advisory context"),
     "dashboard":    ("dashboard.server",        "main", "Run the web dashboard (http://localhost:8765)"),
     "dashboard-export": ("dashboard.export_static", "main", "Export the dashboard as a single read-only HTML file"),
     "scan":         ("scan",              "main", "Rule-based git / folder / sessions scan (free)"),

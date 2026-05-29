@@ -359,9 +359,27 @@ def scan_and_save(repo_path: str, max_commits: int = 200,
         knowledge = {
             "id": kid,
             "type": cand["type"],
+            "taxon": _type_to_taxon(cand["type"]),
             "domain": domain,
             "title": cand["commit_subject"],
             "content": content,
+            "scope": "project",
+            "applies_when": f"When working in repository {Path(repo_path).resolve()} or interpreting its history.",
+            "does_not_apply_when": "Do not generalize outside this repository until reviewed with supporting evidence.",
+            "evidence_level": "raw_observation",
+            "promotion_state": "raw",
+            "project_path": str(Path(repo_path).resolve()),
+            "source_lineage": {
+                "kind": "commit",
+                "ref": cand["commit_hash"],
+                "project_path": str(Path(repo_path).resolve()),
+                "date": cand["commit_date"],
+            },
+            "evidence_excerpt": cand.get("diff_excerpt", ""),
+            "counterexamples": [],
+            "conflicts_with": [],
+            "review_required": 1,
+            "safe_to_generalize": 0,
             "status": "detail",
             "parent_id": None,
             "detail_ids": [],
@@ -411,6 +429,17 @@ def _infer_domain(repo_name: str, changed_files: list[str]) -> str:
 
 def _signal_to_confidence(strength: str) -> float:
     return {"high": 0.85, "medium": 0.65, "low": 0.45}.get(strength, 0.5)
+
+
+def _type_to_taxon(type_name: str) -> str:
+    return {
+        "domain_rule": "evaluation_rule",
+        "architecture_decision": "decision_rationale",
+        "debug_playbook": "debugging_pattern",
+        "anti_pattern": "anti_pattern",
+        "tool_preference": "tool_usage_rule",
+        "code_pattern": "implementation_pattern",
+    }.get(type_name, "implementation_pattern")
 
 
 # --- Folder scanner ---

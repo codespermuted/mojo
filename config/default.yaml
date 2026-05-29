@@ -10,15 +10,15 @@ extraction:
   max_session_tokens: 20000       # 초과 시 요약 후 추출
 
 serving:
-  token_budget: 3000              # CLAUDE.md 주입 토큰 예산
-  skill_threshold: 10             # 도메인 지식 N건 이상 → Skill 승격
-  auto_sync: true                 # SessionStart hook으로 자동 sync
-  confidence_threshold: 0.5       # 이 미만 주입 안 함
+  token_budget: 3000              # MOJO.md advisory context token budget
+  skill_threshold: 10             # legacy explicit sync only
+  auto_sync: false                # do not auto-mutate human instruction files
+  confidence_threshold: 0.5       # legacy explicit sync threshold
 
 quality:
   auto_archive_days: 180
   min_confidence: 0.3
-  require_approval: false         # true → 승인된 지식만 주입
+  require_approval: true          # strong promotion requires review
 
 costs:
   track_costs: true

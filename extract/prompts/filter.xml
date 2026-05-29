@@ -23,6 +23,9 @@ For each candidate, identify:
 2. The knowledge type
 3. A one-sentence summary
 4. What signal triggered extraction (correction, explicit rule, repeated pattern, long discussion)
+5. Whether the signal appears project-only, stack/domain-specific, incident-only, user preference, or likely generalizable
+
+Prefer evidence candidates over strong rules. Do not mark a candidate as universal unless the transcript explicitly supports that breadth.
 
 Respond ONLY with JSON, no other text:
 {
@@ -32,7 +35,8 @@ Respond ONLY with JSON, no other text:
       "turn_range": [start_idx, end_idx],
       "type": "domain_rule|architecture_decision|debug_playbook|anti_pattern|tool_preference|code_pattern",
       "brief": "One sentence summary of the knowledge",
-      "signal": "correction|explicit_rule|long_discussion|pattern_repetition|architecture_rationale"
+      "signal": "correction|explicit_rule|long_discussion|pattern_repetition|architecture_rationale",
+      "likely_scope": "project|domain|environment|workflow|incident|user_preference|universal"
     }
   ]
 }

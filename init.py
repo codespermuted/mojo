@@ -112,10 +112,12 @@ def init_mojo(skip_hooks: bool = False):
     console.print(Panel.fit(
         "[bold green]Mojo initialized![/bold green]\n\n"
         "Next steps:\n"
-        "  1. Open the dashboard:     [cyan]mojo dashboard[/cyan]\n"
+        "  1. Attach a project:       [cyan]mojo attach --project /path/to/project[/cyan]\n"
         "  2. Seed a project (free):  [cyan]mojo scan git /path/to/project[/cyan]\n"
-        "  3. Sync into CLAUDE.md:    [cyan]mojo sync --project /path/to/project[/cyan]\n"
-        "  4. Review / approve items: [cyan]mojo review[/cyan]\n\n"
+        "  3. Generate MOJO.md:       [cyan]mojo refresh --project /path/to/project[/cyan]\n"
+        "  4. Review / approve items: [cyan]mojo review[/cyan]\n"
+        "  5. Open the dashboard:     [cyan]mojo dashboard[/cyan]\n\n"
+        "Mojo generates advisory context by default and does not auto-edit AGENTS.md or CLAUDE.md.\n"
         "Hooks run automatically on the next Claude Code session — no further setup needed.",
         border_style="green"
     ))

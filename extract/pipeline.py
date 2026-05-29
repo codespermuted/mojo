@@ -50,7 +50,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from db_ops import (
     get_db, get_all_knowledge, get_pending_sessions,
-    mark_session_extracted, save_knowledge, log_extraction_cost
+    init_db, mark_session_extracted, save_knowledge, log_extraction_cost
 )
 from extract.parser import parse_session, turns_to_conversation_text
 from extract.signals import score_session_value
@@ -346,6 +346,7 @@ def extract_session(session_path: str, session_id: str,
     Re-extraction guard: session is marked `extracted = 1` in a try/finally,
     so a crash mid-pipeline will not cause double token spend on retry.
     """
+    init_db()
     db = get_db()
     client = anthropic.Anthropic()
     extracted: list[dict] = []
@@ -436,7 +437,11 @@ def _structure_and_save_sync(db, client, session_id, session_data,
             console.print(f"[red]Structure failed: {e}[/red]")
             continue
 
-        _finalize_knowledge(db, session_id, knowledge, existing, extracted)
+        _finalize_knowledge(
+            db, client, session_id, knowledge, existing, extracted,
+            project_path=session_data.get("project_path", ""),
+            evidence_excerpt=excerpt,
+        )
     return extracted
 
 
@@ -463,13 +468,18 @@ def _structure_and_save_batch(db, client, session_id, session_data,
         knowledge = results.get(job["custom_id"])
         if not knowledge:
             continue
-        _finalize_knowledge(db, session_id, knowledge, existing, extracted,
-                            is_batch=True)
+        _finalize_knowledge(
+            db, client, session_id, knowledge, existing, extracted,
+            is_batch=True,
+            project_path=session_data.get("project_path", ""),
+            evidence_excerpt=job["excerpt"],
+        )
     return extracted
 
 
-def _finalize_knowledge(db, session_id, knowledge, existing, extracted,
-                        is_batch: bool = False) -> None:
+def _finalize_knowledge(db, client, session_id, knowledge, existing, extracted,
+                        is_batch: bool = False, project_path: str = "",
+                        evidence_excerpt: str = "") -> None:
     """Log cost, dedup, find related, save, append to lists."""
     sonnet_usage = knowledge.get("_usage", {})
     sonnet_cost = _estimate_cost("sonnet", sonnet_usage, is_batch=is_batch)
@@ -485,6 +495,8 @@ def _finalize_knowledge(db, session_id, knowledge, existing, extracted,
 
     knowledge.pop("_usage", None)
     knowledge.pop("practical_insight", None)
+    suggested_state = knowledge.pop("suggested_promotion_state", None)
+    human_review_required = knowledge.pop("human_review_required", None)
 
     existing_contents = [k["content"] for k in existing]
     is_dup, sim = is_duplicate(knowledge["content"], existing_contents)
@@ -510,9 +522,30 @@ def _finalize_knowledge(db, session_id, knowledge, existing, extracted,
         if reasoning:
             knowledge["related_reasoning"] = reasoning
     knowledge["source_session_id"] = session_id
-
-    if knowledge.get("confidence", 0) >= 0.9:
-        knowledge["approved"] = 1
+    knowledge["project_path"] = project_path or knowledge.get("project_path")
+    knowledge["source_lineage"] = {
+        "kind": "session",
+        "ref": session_id,
+        "project_path": project_path,
+    }
+    knowledge["evidence_excerpt"] = evidence_excerpt[:4000] if evidence_excerpt else ""
+    knowledge.setdefault("scope", "project" if project_path else "domain")
+    knowledge.setdefault(
+        "applies_when",
+        f"When working in {project_path}." if project_path else "",
+    )
+    knowledge.setdefault(
+        "does_not_apply_when",
+        "Do not generalize outside the observed project/domain until reviewed.",
+    )
+    if knowledge.get("confidence", 0) >= 0.75 and knowledge.get("reasoning"):
+        knowledge.setdefault("evidence_level", "local_rule")
+    else:
+        knowledge.setdefault("evidence_level", "raw_observation")
+    knowledge.setdefault("promotion_state", suggested_state or "candidate")
+    knowledge.setdefault("review_required", 1 if human_review_required is not False else 0)
+    knowledge.setdefault("safe_to_generalize", 0)
+    knowledge.setdefault("approved", 0)
 
     save_knowledge(db, knowledge)
     extracted.append(knowledge)
@@ -571,6 +604,7 @@ async def _prefilter_sessions_async(pending: list[dict]) -> dict[str, dict]:
 def extract_pending(dry_run: bool = False, project_path: str | None = None,
                     use_batch: bool = False, parallel: int = 1):
     """Extract all pending sessions, optionally scoped to one project."""
+    init_db()
     db = get_db()
     pending = get_pending_sessions(db, project_path=project_path)
     db.close()
@@ -630,6 +664,7 @@ def _extract_with_prefilter(session: dict, filter_result: dict,
     the try/finally guard.
     """
     session_id = session["id"]
+    init_db()
     db = get_db()
     client = anthropic.Anthropic()
     extracted: list[dict] = []

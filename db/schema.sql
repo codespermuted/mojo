@@ -20,10 +20,23 @@ CREATE TABLE IF NOT EXISTS knowledge (
         'domain_rule', 'architecture_decision', 'debug_playbook',
         'anti_pattern', 'tool_preference', 'code_pattern'
     )),
+    taxon TEXT DEFAULT 'implementation_pattern',
     domain TEXT NOT NULL,
     title TEXT NOT NULL,
     content TEXT NOT NULL,
     reasoning TEXT,
+    scope TEXT DEFAULT 'project',
+    applies_when TEXT DEFAULT '',
+    does_not_apply_when TEXT DEFAULT '',
+    evidence_level TEXT DEFAULT 'raw_observation',
+    promotion_state TEXT DEFAULT 'candidate',
+    project_path TEXT,
+    source_lineage TEXT DEFAULT '{}',     -- JSON object
+    evidence_excerpt TEXT DEFAULT '',
+    counterexamples TEXT DEFAULT '[]',    -- JSON array
+    conflicts_with TEXT DEFAULT '[]',     -- JSON array of knowledge ids
+    review_required INTEGER DEFAULT 1,
+    safe_to_generalize INTEGER DEFAULT 0,
     confidence REAL DEFAULT 0.5 CHECK(confidence >= 0.0 AND confidence <= 1.0),
     source_session_id TEXT,
     related_ids TEXT DEFAULT '[]',        -- JSON array
