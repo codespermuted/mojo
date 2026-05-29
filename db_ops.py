@@ -391,6 +391,45 @@ def init_db(db_path: Optional[Path] = None):
         except sqlite3.OperationalError:
             db.execute(f"ALTER TABLE extraction_costs ADD COLUMN {col} {ddl}")
 
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS companion_interventions (
+            id TEXT PRIMARY KEY,
+            timestamp TEXT NOT NULL,
+            project_path TEXT NOT NULL,
+            context_hash TEXT NOT NULL,
+            knowledge_ids TEXT DEFAULT '[]',
+            intervention_type TEXT NOT NULL CHECK(intervention_type IN (
+                'silent', 'hard_warning', 'soft_suggestion', 'clarifying_question'
+            )),
+            message TEXT NOT NULL,
+            evidence_summary TEXT DEFAULT '',
+            recommended_action TEXT DEFAULT '',
+            confidence REAL DEFAULT 0.0 CHECK(confidence >= 0.0 AND confidence <= 1.0),
+            feedback_requested INTEGER DEFAULT 0,
+            user_feedback TEXT,
+            accepted INTEGER DEFAULT 0,
+            dismissed INTEGER DEFAULT 0,
+            noisy INTEGER DEFAULT 0,
+            wrong INTEGER DEFAULT 0,
+            context_snapshot TEXT DEFAULT '{}',
+            notification_channel TEXT DEFAULT 'terminal',
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_companion_project "
+        "ON companion_interventions(project_path)"
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_companion_type "
+        "ON companion_interventions(intervention_type)"
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_companion_context_hash "
+        "ON companion_interventions(context_hash)"
+    )
+
     # Backfill: reclassify git-scan rows as detail the first time the
     # column exists, OR if no detail rows exist yet at all (recovery from
     # an earlier migration that incorrectly kept them as standalone).
@@ -807,3 +846,90 @@ def mark_conflict(db: sqlite3.Connection, knowledge_id: str,
             (json.dumps(conflicts, ensure_ascii=False), datetime.now().isoformat(), item_id),
         )
     db.commit()
+
+
+def log_companion_intervention(db: sqlite3.Connection, event: dict) -> str:
+    """Persist a companion intervention or notification event."""
+    event_id = event.get("id") or f"ci-{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+    knowledge_ids = event.get("knowledge_ids", [])
+    if not isinstance(knowledge_ids, str):
+        knowledge_ids = json.dumps(knowledge_ids, ensure_ascii=False)
+    context_snapshot = event.get("context_snapshot", {})
+    if not isinstance(context_snapshot, str):
+        context_snapshot = json.dumps(context_snapshot, ensure_ascii=False)
+    db.execute("""
+        INSERT OR REPLACE INTO companion_interventions (
+            id, timestamp, project_path, context_hash, knowledge_ids,
+            intervention_type, message, evidence_summary, recommended_action,
+            confidence, feedback_requested, user_feedback, accepted, dismissed,
+            noisy, wrong, context_snapshot, notification_channel, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        event_id,
+        event.get("timestamp") or datetime.now().isoformat(),
+        event.get("project_path", ""),
+        event.get("context_hash", ""),
+        knowledge_ids,
+        event.get("intervention_type", "silent"),
+        event.get("message", ""),
+        event.get("evidence_summary", ""),
+        event.get("recommended_action", ""),
+        event.get("confidence", 0.0),
+        int(bool(event.get("feedback_requested", 0))),
+        event.get("user_feedback"),
+        int(bool(event.get("accepted", 0))),
+        int(bool(event.get("dismissed", 0))),
+        int(bool(event.get("noisy", 0))),
+        int(bool(event.get("wrong", 0))),
+        context_snapshot,
+        event.get("notification_channel", "terminal"),
+        datetime.now().isoformat(),
+    ))
+    db.commit()
+    return event_id
+
+
+def record_companion_feedback(db: sqlite3.Connection, event_id: str,
+                              feedback: str, accepted: bool = False,
+                              dismissed: bool = False) -> bool:
+    """Attach user feedback to a companion event."""
+    if feedback not in {"useful", "not_useful", "too_noisy", "too_weak", "wrong"}:
+        raise ValueError(f"Invalid feedback: {feedback}")
+    row = db.execute(
+        "SELECT id FROM companion_interventions WHERE id = ?", (event_id,)
+    ).fetchone()
+    if not row:
+        return False
+    db.execute("""
+        UPDATE companion_interventions
+           SET user_feedback = ?,
+               accepted = ?,
+               dismissed = ?,
+               noisy = ?,
+               wrong = ?,
+               updated_at = ?
+         WHERE id = ?
+    """, (
+        feedback,
+        int(bool(accepted or feedback == "useful")),
+        int(bool(dismissed or feedback in {"not_useful", "too_noisy", "wrong"})),
+        int(feedback == "too_noisy"),
+        int(feedback == "wrong"),
+        datetime.now().isoformat(),
+        event_id,
+    ))
+    db.commit()
+    return True
+
+
+def get_companion_intervention(db: sqlite3.Connection, event_id: str) -> dict | None:
+    row = db.execute(
+        "SELECT * FROM companion_interventions WHERE id = ?", (event_id,)
+    ).fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    d["knowledge_ids"] = _json_or_default(d.get("knowledge_ids"), [])
+    d["context_snapshot"] = _json_or_default(d.get("context_snapshot"), {})
+    return d

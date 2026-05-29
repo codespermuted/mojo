@@ -200,6 +200,7 @@ mojo attach        Attach Mojo advisory metadata to a project
 mojo detach        Detach Mojo advisory metadata from a project
 mojo status        Show attachment, DB, and advisory-file status
 mojo refresh       Regenerate advisory MOJO.md for the current task
+mojo companion     Quiet sidecar/check intervention layer
 mojo dashboard     Run the web dashboard (http://localhost:8765)
 mojo scan          Rule-based git / folder / sessions scan (free)
 mojo extract       Run the LLM extraction pipeline (Haiku → Sonnet)
@@ -243,6 +244,17 @@ mojo extract --batch --parallel 4
 
 # Generate advisory context without editing human-authored instruction files
 mojo refresh --project ~/code/my-service --task "debug list endpoint latency"
+
+# Run the quiet companion intervention check once
+mojo companion check --project ~/code/my-service --task "auto modify CLAUDE.md"
+
+# Enable/disable lightweight local sidecar state
+mojo companion start --project ~/code/my-service
+mojo companion status --project ~/code/my-service
+mojo companion stop --project ~/code/my-service
+
+# Feed back on a shown intervention
+mojo companion feedback ci-20260529123456000000 useful --accepted
 
 # Optional explicit legacy injection into Claude-facing files
 mojo sync --project ~/code/my-service --skill
@@ -306,6 +318,39 @@ when it carries clear scope, rationale, and promotion state.
 - **Light / dark theme toggle** — persisted in `localStorage`
 - **No build step** — React, ReactDOM, Babel-standalone, and d3 are
   loaded from CDN
+
+## Companion Intervention Layer
+
+The companion layer is a quiet observer over the same scoped knowledge DB.
+It is not an autonomous agent and it does not edit code or instruction
+files. It collects local context, retrieves relevant Mojo knowledge, then
+chooses one of:
+
+- `silent`
+- `hard_warning`
+- `soft_suggestion`
+- `clarifying_question`
+
+Default sensitivity is conservative. Raw evidence cannot trigger hard
+warnings by itself. Candidate knowledge usually becomes a suggestion or a
+clarifying question. Project-approved and generalized knowledge can trigger
+warnings only when scope and context match.
+
+The first implementation provides:
+
+- project context collection: project path, git branch/diff, recent files,
+  current task/event/command/output, and generated `MOJO.md`
+- scoped retrieval through the advisory layer
+- rule-based intervention classification
+- terminal/JSON notification abstraction
+- SQLite intervention logging and feedback
+- sidecar status via `.mojo/companion.json`
+
+`mojo companion check` is the safe one-shot mode. `mojo companion start`
+starts a lightweight local sidecar process unless `--no-process` is used.
+Both modes preserve `AGENTS.md`, `CLAUDE.md`, `SKILL.md`, `SKILLS.md`, and
+other human-authored instruction files. The companion may warn or suggest,
+but actual edits require explicit user action outside the companion.
 
 ## Architecture
 

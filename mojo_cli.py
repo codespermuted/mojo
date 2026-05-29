@@ -17,6 +17,7 @@ COMMANDS: dict[str, tuple[str, str, str]] = {
     "detach":       ("advisory",          "detach_main", "Detach Mojo advisory metadata from this project"),
     "status":       ("advisory",          "status_main", "Show project attachment and advisory status"),
     "refresh":      ("advisory",          "refresh_main", "Regenerate project MOJO.md advisory context"),
+    "companion":    ("companion",         "main", "Run quiet companion intervention checks"),
     "dashboard":    ("dashboard.server",        "main", "Run the web dashboard (http://localhost:8765)"),
     "dashboard-export": ("dashboard.export_static", "main", "Export the dashboard as a single read-only HTML file"),
     "scan":         ("scan",              "main", "Rule-based git / folder / sessions scan (free)"),
