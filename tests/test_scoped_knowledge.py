@@ -15,7 +15,7 @@ from db_ops import (
     save_knowledge,
     set_promotion_state,
 )
-from scan import scan_and_save
+from scan import scan_and_save, scan_markdown_notes
 
 
 def test_schema_migration_adds_scoped_columns(tmp_path):
@@ -187,3 +187,27 @@ def test_git_scan_preserves_raw_evidence(tmp_path, monkeypatch):
     assert row["project_path"] == str(repo.resolve())
     assert json.loads(row["source_lineage"])["kind"] == "commit"
     assert "print('fixed')" in row["evidence_excerpt"]
+
+
+def test_markdown_notes_import_as_raw_evidence(tmp_path, monkeypatch):
+    db_path = tmp_path / "mojo.db"
+    monkeypatch.setattr(db_ops, "DB_PATH", db_path)
+    project = tmp_path / "repo"
+    project.mkdir()
+    (project / "NOTES.md").write_text(
+        "# Auth Cache Note\n\n"
+        "When debugging this service, stale auth state may come from the local dependency cache. "
+        "This is raw evidence and needs review before becoming guidance.\n",
+        encoding="utf-8",
+    )
+
+    scan_markdown_notes(str(project))
+    db = get_db(db_path)
+    row = db.execute("SELECT * FROM knowledge WHERE source_session_id LIKE 'markdown-note-%'").fetchone()
+    db.close()
+
+    assert row is not None
+    assert row["promotion_state"] == "raw"
+    assert row["evidence_level"] == "raw_observation"
+    assert json.loads(row["source_lineage"])["kind"] == "markdown_note"
+    assert row["project_path"] == str(project.resolve())

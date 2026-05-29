@@ -217,6 +217,7 @@ mojo import-seed   Bulk-import a seed knowledge JSON file
 mojo attach --project ~/code/my-service
 mojo scan git   ~/code/my-service
 mojo scan folder ~/code/my-service
+mojo scan notes ~/code/my-service
 
 # Scan a public repo without adding it to your tree
 git clone --depth 200 https://github.com/org/repo /tmp/repo
@@ -257,6 +258,7 @@ dashboard, and competes on the same A–F grades. Mix and match freely.
 |---------------------------|-----------------------------------------------------|------|
 | **Git history**           | `mojo scan git /path/to/project`                    | T2 evidence |
 | **Folder scan**           | `mojo scan folder /path/to/project`                 | T2 evidence |
+| **Markdown notes/docs**   | `mojo scan notes /path/to/project`                  | T2 evidence |
 | **Past Claude sessions**  | `mojo scan sessions`                                | T2 evidence until reviewed |
 | **Live Claude sessions**  | automatic capture after hooks are installed         | T2 evidence until reviewed |
 | **Hand-written seed**     | `mojo import-seed seeds/seed_knowledge.json`        | Candidate until reviewed |

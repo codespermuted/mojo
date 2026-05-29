@@ -585,6 +585,109 @@ def scan_folder_and_report(project_path: str):
     )
 
 
+def scan_markdown_notes(project_path: str, max_files: int = 50,
+                        dry_run: bool = False) -> list[dict]:
+    """Import markdown notes/docs as scoped raw evidence.
+
+    This is deliberately explicit rather than part of `scan folder` so a
+    discovery command does not unexpectedly persist every README paragraph.
+    Notes are saved as T2/raw evidence and require review before promotion.
+    """
+    root = Path(project_path).resolve()
+    if not root.exists():
+        console.print(f"[red]Path not found: {root}[/red]")
+        return []
+
+    candidates: list[dict] = []
+    seen = 0
+    for md in sorted(root.rglob("*.md")):
+        rel = md.relative_to(root)
+        if any(part in {".git", ".mojo", "node_modules", ".venv", "venv", "__pycache__"}
+               for part in rel.parts):
+            continue
+        if seen >= max_files:
+            break
+        try:
+            text = md.read_text(encoding="utf-8", errors="ignore").strip()
+        except OSError:
+            continue
+        if len(text) < 80:
+            continue
+        seen += 1
+        title = _first_markdown_title(text) or rel.as_posix()
+        candidates.append({
+            "id": f"note-{abs(hash((str(root), rel.as_posix()))) % 10_000_000:07d}",
+            "type": "domain_rule",
+            "taxon": "research_hypothesis",
+            "domain": f"project/{root.name.lower()}",
+            "title": title[:80],
+            "content": text[:1500],
+            "reasoning": f"Raw markdown evidence imported from {rel.as_posix()}.",
+            "scope": "project",
+            "applies_when": f"When working in {root} and the note remains current.",
+            "does_not_apply_when": "Do not treat this markdown note as reviewed guidance until promoted.",
+            "evidence_level": "raw_observation",
+            "promotion_state": "raw",
+            "project_path": str(root),
+            "source_session_id": f"markdown-note-{rel.as_posix()}",
+            "source_lineage": {
+                "kind": "markdown_note",
+                "ref": rel.as_posix(),
+                "project_path": str(root),
+            },
+            "evidence_excerpt": text[:4000],
+            "counterexamples": [],
+            "conflicts_with": [],
+            "review_required": 1,
+            "safe_to_generalize": 0,
+            "related_ids": [],
+            "tags": ["markdown", "raw-evidence", root.name.lower()],
+            "confidence": 0.45,
+            "approved": 0,
+            "status": "detail",
+            "parent_id": None,
+            "detail_ids": [],
+        })
+
+    if dry_run:
+        console.print(f"[green]Found {len(candidates)} markdown note(s)[/green]")
+        for c in candidates[:10]:
+            console.print(f"  {c['id']}: {c['title']}")
+        return candidates
+
+    if not candidates:
+        console.print("[yellow]No markdown notes found.[/yellow]")
+        return []
+
+    init_db()
+    db = get_db()
+    saved = 0
+    try:
+        existing = db.execute(
+            "SELECT content FROM knowledge WHERE archived = 0"
+        ).fetchall()
+        existing_contents = [r[0] for r in existing]
+        for item in candidates:
+            is_dup, _ = is_duplicate(item["content"], existing_contents, threshold=0.75)
+            if is_dup:
+                continue
+            save_knowledge(db, item)
+            existing_contents.append(item["content"])
+            saved += 1
+    finally:
+        db.close()
+    console.print(f"[green]Saved {saved} markdown note(s) as raw evidence.[/green]")
+    return candidates
+
+
+def _first_markdown_title(text: str) -> str:
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            return stripped.lstrip("#").strip()
+    return ""
+
+
 # --- CLI ---
 
 def main():
@@ -617,6 +720,11 @@ def main():
              "'--project all' to backfill every project on disk.",
     )
 
+    notes_p = sub.add_parser("notes", help="Import markdown notes/docs as raw evidence")
+    notes_p.add_argument("path", nargs="?", default=".", help="Project path")
+    notes_p.add_argument("--max-files", type=int, default=50)
+    notes_p.add_argument("--dry-run", action="store_true")
+
     args = parser.parse_args()
 
     if args.cmd == "folder":
@@ -632,6 +740,8 @@ def main():
         else:
             proj = args.project or str(Path.cwd())
         backfill_sessions(args.max_sessions, project_path=proj)
+    elif args.cmd == "notes":
+        scan_markdown_notes(args.path, max_files=args.max_files, dry_run=args.dry_run)
     else:
         parser.print_help()
 
