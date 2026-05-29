@@ -42,6 +42,19 @@ class TestParser:
         # Should be truncated
         assert len(text) <= 50 * 4 + 100  # rough bound
 
+    def test_parse_role_content_jsonl(self, tmp_path):
+        path = tmp_path / "codex_like.jsonl"
+        path.write_text(
+            '{"session_id":"codex-001","project_path":"/repo","role":"user","content":"Use the local helper here."}\n'
+            '{"session_id":"codex-001","role":"assistant","content":"Understood."}\n',
+            encoding="utf-8",
+        )
+        result = parse_session(str(path))
+        assert result["session_id"] == "codex-001"
+        assert result["project_path"] == "/repo"
+        assert result["turn_count"] == 2
+        assert result["turns"][0]["role"] == "user"
+
 
 class TestSignals:
     def test_detect_corrections(self):

@@ -233,6 +233,9 @@ mojo dashboard
 export ANTHROPIC_API_KEY=sk-ant-...
 mojo extract
 
+# Extract one Claude/Codex-style JSONL transcript directly
+mojo extract --session /path/to/session.jsonl --session-id session-001
+
 # Cost-optimized variants (stack freely):
 mojo extract --batch            # Message Batches API (~50% off Sonnet, async)
 mojo extract --parallel 4       # Haiku filter across 4 sessions in parallel

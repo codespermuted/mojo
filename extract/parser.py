@@ -36,10 +36,19 @@ def parse_session(jsonl_path: str) -> dict:
             continue
 
         # Extract session metadata
-        if not session_id and "sessionId" in event:
-            session_id = event["sessionId"]
-        if not project_path and "cwd" in event:
-            project_path = event["cwd"]
+        if not session_id:
+            session_id = (
+                event.get("sessionId")
+                or event.get("session_id")
+                or event.get("conversation_id")
+            )
+        if not project_path:
+            project_path = (
+                event.get("cwd")
+                or event.get("project_path")
+                or event.get("workspace")
+                or event.get("repo")
+            )
 
         ts = event.get("timestamp", "")
         if ts:
@@ -47,9 +56,11 @@ def parse_session(jsonl_path: str) -> dict:
 
         event_type = event.get("type", "")
         message = event.get("message", {})
+        role = event.get("role") or message.get("role", "")
 
-        if event_type == "user":
-            content = _extract_content(message.get("content", ""))
+        if event_type == "user" or (not event_type and role == "user"):
+            raw_content = message.get("content", "") if message else event.get("content", "")
+            content = _extract_content(raw_content)
             if content:
                 turns.append({
                     "role": "user",
@@ -58,8 +69,8 @@ def parse_session(jsonl_path: str) -> dict:
                     "tool_uses": [],
                 })
 
-        elif event_type == "assistant":
-            content_blocks = message.get("content", [])
+        elif event_type == "assistant" or (not event_type and role == "assistant"):
+            content_blocks = message.get("content", []) if message else event.get("content", "")
             text_content = ""
             tool_uses = []
 
