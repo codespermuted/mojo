@@ -1051,10 +1051,18 @@ function KCard({
   expandedDetailIds, onToggleDetail,
   onSelectSession, onNavigateTo,
 }) {
-  const [editing, setEditing] = useState(false);
-  const [ec, setEc] = useState(item.content);
-  const [er, setEr] = useState(item.reasoning || "");
-  const t = TYPES[item.type] || {};
+	  const [editing, setEditing] = useState(false);
+	  const [ec, setEc] = useState(item.content);
+	  const [er, setEr] = useState(item.reasoning || "");
+	  const [escope, setEscope] = useState(item.scope || "project");
+	  const [etaxon, setEtaxon] = useState(item.taxon || "implementation_pattern");
+	  const [eevidence, setEevidence] = useState(item.evidence_level || "raw_observation");
+	  const [eapplies, setEapplies] = useState(item.applies_when || "");
+	  const [elimits, setElimits] = useState(item.does_not_apply_when || "");
+	  const [ecounters, setEcounters] = useState((item.counterexamples || []).join("; "));
+	  const [econflicts, setEconflicts] = useState((item.conflicts_with || []).join(", "));
+	  const [esafe, setEsafe] = useState(!!item.safe_to_generalize);
+	  const t = TYPES[item.type] || {};
   const status = statusOf(item);
   const isDetail = status === "detail";
   const isSummary = status === "summary";
@@ -1062,12 +1070,35 @@ function KCard({
     ? "repeating-linear-gradient(45deg, transparent 0 7px, rgba(148,163,184,0.04) 7px 8px)"
     : "none";
 
-  useEffect(() => {
-    setEc(item.content);
-    setEr(item.reasoning || "");
-  }, [item.content, item.reasoning]);
+	  useEffect(() => {
+	    setEc(item.content);
+	    setEr(item.reasoning || "");
+	    setEscope(item.scope || "project");
+	    setEtaxon(item.taxon || "implementation_pattern");
+	    setEevidence(item.evidence_level || "raw_observation");
+	    setEapplies(item.applies_when || "");
+	    setElimits(item.does_not_apply_when || "");
+	    setEcounters((item.counterexamples || []).join("; "));
+	    setEconflicts((item.conflicts_with || []).join(", "));
+	    setEsafe(!!item.safe_to_generalize);
+	  }, [item]);
 
-  const save = () => { onEdit(item.id, ec, er); setEditing(false); };
+	  const save = () => {
+	    onEdit(item.id, {
+	      content: ec,
+	      reasoning: er,
+	      scope: escope,
+	      taxon: etaxon,
+	      evidence_level: eevidence,
+	      applies_when: eapplies,
+	      does_not_apply_when: elimits,
+	      counterexamples: ecounters.split(";").map(s => s.trim()).filter(Boolean),
+	      conflicts_with: econflicts.split(",").map(s => s.trim()).filter(Boolean),
+	      safe_to_generalize: esafe ? 1 : 0,
+	    });
+	    setEditing(false);
+	  };
+	  const editInput = { width:"100%", background:"var(--input-bg)", border:"1px solid var(--border-strong)", borderRadius:6, padding:8, color:"var(--text-main)", fontSize:11.5, fontFamily:"'JetBrains Mono',monospace", outline:"none", boxSizing:"border-box" };
 
   return (
     <div id={`kcard-${item.id}`} onClick={() => !editing && onToggle(item.id)}
@@ -1119,16 +1150,37 @@ function KCard({
 
       {isExpanded && (
         <div style={{ marginTop:10 }} onClick={e => e.stopPropagation()}>
-          {editing ? (
-            <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-              <textarea value={ec} onChange={e => setEc(e.target.value)} rows={3}
-                style={{ width:"100%", background:"var(--input-bg)", border:"1px solid var(--border-strong)", borderRadius:6, padding:8, color:"var(--text-main)", fontSize:12.5, fontFamily:"'JetBrains Mono',monospace", resize:"vertical", outline:"none", boxSizing:"border-box" }} />
-              <textarea value={er} onChange={e => setEr(e.target.value)} rows={2} placeholder="Reasoning..."
-                style={{ width:"100%", background:"var(--input-bg)", border:"1px solid var(--border-strong)", borderRadius:6, padding:8, color:"var(--text-mid)", fontSize:11.5, fontFamily:"'JetBrains Mono',monospace", fontStyle:"italic", resize:"vertical", outline:"none", boxSizing:"border-box" }} />
-              <div style={{ display:"flex", gap:6 }}>
-                <button onClick={save} style={{ padding:"5px 14px", borderRadius:5, border:"none", background:"var(--accent)", color:"#0b0b0b", fontSize:11, fontWeight:600, cursor:"pointer" }}>Save</button>
-                <button onClick={() => { setEditing(false); setEc(item.content); setEr(item.reasoning || ""); }}
-                  style={{ padding:"5px 14px", borderRadius:5, border:"1px solid var(--border-strong)", background:"transparent", color:"var(--text-mid)", fontSize:11, cursor:"pointer" }}>Cancel</button>
+	          {editing ? (
+	            <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+	              <textarea value={ec} onChange={e => setEc(e.target.value)} rows={3}
+	                style={{ width:"100%", background:"var(--input-bg)", border:"1px solid var(--border-strong)", borderRadius:6, padding:8, color:"var(--text-main)", fontSize:12.5, fontFamily:"'JetBrains Mono',monospace", resize:"vertical", outline:"none", boxSizing:"border-box" }} />
+	              <textarea value={er} onChange={e => setEr(e.target.value)} rows={2} placeholder="Reasoning..."
+	                style={{ width:"100%", background:"var(--input-bg)", border:"1px solid var(--border-strong)", borderRadius:6, padding:8, color:"var(--text-mid)", fontSize:11.5, fontFamily:"'JetBrains Mono',monospace", fontStyle:"italic", resize:"vertical", outline:"none", boxSizing:"border-box" }} />
+	              <div style={{ display:"grid", gridTemplateColumns:"repeat(3, minmax(0, 1fr))", gap:6 }}>
+	                <select value={escope} onChange={e => setEscope(e.target.value)} style={editInput}>
+	                  {["project","domain","environment","workflow","incident","user_preference","universal"].map(s => <option key={s} value={s}>{s}</option>)}
+	                </select>
+	                <select value={etaxon} onChange={e => setEtaxon(e.target.value)} style={editInput}>
+	                  {["implementation_pattern","debugging_pattern","evaluation_rule","leakage_warning","environment_constraint","project_convention","user_preference","decision_rationale","anti_pattern","tool_usage_rule","deployment_note","research_hypothesis","unresolved_question"].map(s => <option key={s} value={s}>{s}</option>)}
+	                </select>
+	                <select value={eevidence} onChange={e => setEevidence(e.target.value)} style={editInput}>
+	                  {["raw_observation","local_rule","generalized_principle","policy"].map(s => <option key={s} value={s}>{s}</option>)}
+	                </select>
+	              </div>
+	              <textarea value={eapplies} onChange={e => setEapplies(e.target.value)} rows={2} placeholder="Applies when..."
+	                style={{ ...editInput, resize:"vertical" }} />
+	              <textarea value={elimits} onChange={e => setElimits(e.target.value)} rows={2} placeholder="Does not apply when..."
+	                style={{ ...editInput, resize:"vertical" }} />
+	              <input value={ecounters} onChange={e => setEcounters(e.target.value)} placeholder="Counterexamples; separated by semicolon" style={editInput} />
+	              <input value={econflicts} onChange={e => setEconflicts(e.target.value)} placeholder="Conflicting IDs, comma separated" style={editInput} />
+	              <label style={{ display:"flex", alignItems:"center", gap:6, fontSize:11, color:"var(--text-mid)" }}>
+	                <input type="checkbox" checked={esafe} onChange={e => setEsafe(e.target.checked)} style={{ accentColor:"var(--accent)" }} />
+	                Safe to generalize after review
+	              </label>
+	              <div style={{ display:"flex", gap:6 }}>
+	                <button onClick={save} style={{ padding:"5px 14px", borderRadius:5, border:"none", background:"var(--accent)", color:"#0b0b0b", fontSize:11, fontWeight:600, cursor:"pointer" }}>Save</button>
+	                <button onClick={() => { setEditing(false); setEc(item.content); setEr(item.reasoning || ""); setEscope(item.scope || "project"); setEtaxon(item.taxon || "implementation_pattern"); setEevidence(item.evidence_level || "raw_observation"); setEapplies(item.applies_when || ""); setElimits(item.does_not_apply_when || ""); setEcounters((item.counterexamples || []).join("; ")); setEconflicts((item.conflicts_with || []).join(", ")); setEsafe(!!item.safe_to_generalize); }}
+	                  style={{ padding:"5px 14px", borderRadius:5, border:"1px solid var(--border-strong)", background:"transparent", color:"var(--text-mid)", fontSize:11, cursor:"pointer" }}>Cancel</button>
               </div>
             </div>
           ) : (
@@ -1141,6 +1193,13 @@ function KCard({
 	                  {item.does_not_apply_when && <div><b style={{ color:"var(--text-main)" }}>Limits:</b> {item.does_not_apply_when}</div>}
 	                </div>
 	              )}
+	              <div style={{ margin:"0 0 8px", fontSize:10.5, color:"var(--text-faint)", lineHeight:1.45 }}>
+	                <span>Taxon: {item.taxon || "implementation_pattern"}</span>
+	                <span style={{ marginLeft:10 }}>Evidence: {item.evidence_level || "raw_observation"}</span>
+	                {item.safe_to_generalize ? <span style={{ marginLeft:10, color:"var(--accent)" }}>safe to generalize</span> : null}
+	              </div>
+	              {(item.counterexamples || []).length > 0 && <div style={{ margin:"0 0 6px", fontSize:10.5, color:"var(--text-faint)" }}>Counterexamples: {(item.counterexamples || []).join("; ")}</div>}
+	              {(item.conflicts_with || []).length > 0 && <div style={{ margin:"0 0 8px", fontSize:10.5, color:"#D97706" }}>Conflicts: {(item.conflicts_with || []).join(", ")}</div>}
 	              <div style={{ display:"flex", flexWrap:"wrap", gap:3, marginBottom:8 }}>
                 {(item.tags || []).map(tag => <span key={tag} style={{ fontSize:9.5, padding:"1px 5px", borderRadius:3, background:"var(--bar-track)", color:"var(--text-mid)" }}>#{tag}</span>)}
               </div>
@@ -1328,7 +1387,7 @@ function MojoDashboard() {
     });
   };
   const del     = async (id) => { await api.del(id); flash(`🗑 Deleted: ${id}`); refresh(); };
-  const edit    = async (id, c, r) => { await api.update(id, { content:c, reasoning:r }); flash(`✎ Updated: ${id}`); refresh(); };
+  const edit    = async (id, patch) => { await api.update(id, patch); flash(`✎ Updated: ${id}`); refresh(); };
   const addItem = async (payload) => { const it = await api.create(payload); flash(`✓ Added: ${it.title}`); refresh(); };
 
   const toggleDetailSelect = (id, checked) => {
