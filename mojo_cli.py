@@ -21,7 +21,7 @@ COMMANDS: dict[str, tuple[str, str, str]] = {
     "dashboard-export": ("dashboard.export_static", "main", "Export the dashboard as a single read-only HTML file"),
     "scan":         ("scan",              "main", "Rule-based git / folder / sessions scan (free)"),
     "extract":      ("extract.pipeline",  "main", "Run the LLM extraction pipeline (Haiku -> Sonnet)"),
-    "sync":         ("serve.sync",        "main", "Write CLAUDE.md / SKILL.md into a project"),
+    "sync":         ("serve.sync",        "main", "Explicit legacy write to CLAUDE.md / SKILL.md"),
     "review":       ("review",            "main", "Approve / edit extracted items from the terminal"),
     "search":       ("search",            "main", "Full-text search across the knowledge store"),
     "stats":        ("stats",             "main", "Show store statistics and extraction cost"),
