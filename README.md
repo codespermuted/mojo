@@ -19,11 +19,23 @@ consumes it.
 
 ## The Promise
 
-Mojo captures work evidence through local hooks and backfill commands,
-distills durable tacit knowledge with a two-stage LLM pipeline (Haiku
-filter → Sonnet structure), and keeps quality separate from applicability
-scope. By default it writes advisory context to `MOJO.md`, not into
-human-authored instruction files.
+Mojo captures work evidence through local hooks and backfill commands
+(both **Claude Code and Codex** sessions), distills durable tacit
+knowledge with a two-stage LLM pipeline (cheap filter → strong
+structurer), and keeps quality separate from applicability scope.
+
+Three things make the loop sustainable:
+
+1. **Zero marginal cost by default.** The pipeline runs on headless
+   `claude -p` (your subscription), not an API key. `codex exec` and the
+   Anthropic API remain available as backends.
+2. **Knowledge lives as markdown in an Obsidian vault.** One claim = one
+   note; reviewing = editing frontmatter. The knowledge is visible where
+   you already read and think, not locked in SQLite.
+3. **Generalization is evidence, not filing.** Every claim starts
+   project-scoped; re-observing it in a second project records evidence,
+   and only cross-project support suggests promotion. A counterexample
+   sharpens `does_not_apply_when` instead of deleting the claim.
 
 Your workflow stays human-controlled: Mojo surfaces what matters, why it
 was selected, where it applies, and where it should not be generalized.
@@ -60,8 +72,11 @@ deliberately want to write approved knowledge into Claude-facing files.
 ### 1. Zero-friction capture
 
 `mojo init` registers two Claude Code hooks (`SessionEnd`, `Stop`). After
-that, Mojo records every session transcript to its SQLite store in the
-background. You never stop to write a rule down.
+that, every session is registered **and auto-extracted in the background**
+(detached process, logged to `~/.mojo/logs/auto-extract.log`) — the
+default backend is headless `claude -p`, so this costs nothing and needs
+no API key. You never stop to write a rule down. Set
+`extraction.auto_extract: false` to go back to manual `mojo extract`.
 
 ### 2. Scoped advisory retrieval
 
@@ -200,10 +215,11 @@ mojo attach        Attach Mojo advisory metadata to a project
 mojo detach        Detach Mojo advisory metadata from a project
 mojo status        Show attachment, DB, and advisory-file status
 mojo refresh       Regenerate advisory MOJO.md for the current task
+mojo vault         Sync knowledge with the Obsidian vault (md ↔ DB)
 mojo companion     Quiet sidecar/check intervention layer
-mojo dashboard     Run the web dashboard (http://localhost:8765)
-mojo scan          Rule-based git / folder / sessions scan (free)
-mojo extract       Run the LLM extraction pipeline (Haiku → Sonnet)
+mojo dashboard     Run the web dashboard (legacy review UI)
+mojo scan          Rule-based git / folder / Claude+Codex sessions scan (free)
+mojo extract       Run the extraction pipeline (claude/codex CLI or API)
 mojo sync          Explicit legacy write to CLAUDE.md / SKILL.md
 mojo review        Approve / edit extracted items from the terminal
 mojo search        Full-text search across the knowledge store
@@ -230,17 +246,20 @@ mojo import-seed seeds/seed_knowledge.json
 # Manual entry via the dashboard — click "+ Add" in the top bar
 mojo dashboard
 
-# Process pending Claude Code sessions with the LLM pipeline
-export ANTHROPIC_API_KEY=sk-ant-...
-mojo extract
+# Backfill past Claude Code + Codex sessions for this project, then extract
+mojo scan sessions --project ~/code/my-service        # --source claude|codex|all
+mojo extract --project ~/code/my-service              # headless claude -p, $0
 
-# Extract one Claude/Codex-style JSONL transcript directly
+# Extract one Claude/Codex JSONL transcript directly (format auto-detected)
 mojo extract --session /path/to/session.jsonl --session-id session-001
 
-# Cost-optimized variants (stack freely):
-mojo extract --batch            # Message Batches API (~50% off Sonnet, async)
-mojo extract --parallel 4       # Haiku filter across 4 sessions in parallel
-mojo extract --batch --parallel 4
+# Pick a backend per run
+mojo extract --backend codex-cli
+mojo extract --backend api --batch --parallel 4   # API: batches + parallel filter
+
+# Mirror knowledge into the Obsidian vault / pull back human edits
+mojo vault init      # first time: create vault + README
+mojo vault sync      # import frontmatter edits, re-export notes
 
 # Generate advisory context without editing human-authored instruction files
 mojo refresh --project ~/code/my-service --task "debug list endpoint latency"
@@ -291,7 +310,52 @@ knowledge has been reviewed and is valuable enough to guide future work.
 Manual input is not automatically T1. It becomes T1 only after review or
 when it carries clear scope, rationale, and promotion state.
 
-## The Dashboard
+## The Obsidian Vault
+
+`mojo vault sync` mirrors the knowledge store into a plain-markdown
+vault (default `~/mojo-vault`, configurable via `vault.path`):
+
+```
+~/mojo-vault/
+├── README.md            # review conventions
+├── REVIEW-QUEUE.md      # auto-generated inbox: pending reviews + generalization candidates
+└── knowledge/
+    └── electricity/smp/
+        └── smp-004 Use KST for SMP timestamps.md
+```
+
+One claim = one note. The frontmatter **is** the review UI — edit it in
+Obsidian, then `mojo vault sync`:
+
+- approve for this project → `promotion_state: project_approved`
+- generalize → `promotion_state: generalized` + `scope: domain|universal`
+- reject / archive → `promotion_state: rejected` / `archived: true`
+- sharpen boundaries → `applies_when` / `does_not_apply_when`
+
+Two-way sync is safe without timestamps because ownership is split:
+human-editable fields (title, content, scope, promotion state, …) are
+owned by the vault file; machine fields (observations, grades, related
+links) are owned by the DB and regenerated on every export. Invalid enum
+edits are rejected instead of corrupting the store. After auto-extraction
+(see Hooks) new notes appear in the vault without any manual step.
+
+## Claims and Observations
+
+The core taxonomy question — *"is this knowledge project-specific or
+general?"* — is deliberately **not answered at capture time**, because the
+same claim can be true in one project and false in another.
+
+- A knowledge row is a **claim**, captured project-scoped.
+- Every sighting is an **observation**: `(project, session, supports|refutes)`.
+- The TF-IDF dedup does not discard re-extractions — a re-observation from
+  a *different* project is exactly the evidence generalization needs.
+- Supporting observations from ≥ 2 distinct projects (with zero
+  refutations) flag the claim as a generalization candidate in
+  `REVIEW-QUEUE.md`. Promotion itself stays a human decision.
+- A refuting observation never deletes the claim; it sharpens
+  `does_not_apply_when` — the boundary is the knowledge.
+
+## The Dashboard (legacy)
 
 `mojo dashboard` opens a single-file React SPA served by FastAPI at
 `http://localhost:8765`. Features:
@@ -407,39 +471,27 @@ of:
 
 ## Cost
 
-- Signal detection and git scanning: **free** (rule-based, no API calls)
-- Haiku filter: ~$0.001 / session
-- Sonnet structuring: ~$0.005 / candidate
-- Typical monthly total: **$1–5** at 5–10 sessions / day
+- Default (`claude-cli` backend): **$0** — runs on your Claude subscription.
+- Signal detection and git scanning: **free** (rule-based, no LLM calls)
+- `api` backend: ~$0.001/session (Haiku filter) + ~$0.005/candidate
+  (Sonnet structuring); typical monthly total **$1–5** at 5–10 sessions/day.
 
-All costs are tracked per stage in the `extraction_costs` SQLite table.
-Set `costs.monthly_budget_usd` in `config.yaml` to hard-stop extraction
-when a budget is exceeded.
+All costs are tracked per stage in the `extraction_costs` SQLite table
+(CLI backends record token usage with cost 0).
 
-## With or Without an API Key
+## LLM Backends
 
-Mojo works without an Anthropic API key. The key only unlocks the
-LLM-powered structuring pipeline; everything else — scanning, storage,
-dashboard, MOJO.md advisory generation — runs for free.
+`mojo extract` runs on one of three backends (`extraction.backend` in
+`~/.mojo/config.yaml`, or `--backend` per run):
 
-| Feature                                  | Without API Key        | With API Key      |
-|------------------------------------------|:----------------------:|:-----------------:|
-| Git history scan                         | ✅ Rule-based, Grade C | ✅ Same           |
-| Folder scan                              | ✅ Full                | ✅ Same           |
-| Seed import                              | ✅ Full                | ✅ Same           |
-| Dashboard (view / edit / add / delete)   | ✅ Full                | ✅ Same           |
-| MOJO.md advisory generation              | ✅ Full                | ✅ Same           |
-| Graph visualization                      | ✅ Full                | ✅ Same           |
-| Session auto-capture (hooks)             | ✅ Registration only   | ✅ Same           |
-| **Session → structured knowledge**       | ❌                     | ✅ Grade A–B      |
-| **Cost**                                 | **$0**                 | **~$0.04/session** |
+| Backend          | Mechanism                | Cost            | Notes |
+|------------------|--------------------------|-----------------|-------|
+| **`claude-cli`** (default) | headless `claude -p` | **$0** (subscription) | filter=haiku, structure=sonnet. `ANTHROPIC_API_KEY` is stripped from the child env so billing can never silently fall through to a key — if you are not logged in, you get a loud error. |
+| `codex-cli`      | headless `codex exec`    | **$0** (subscription) | uses your configured Codex model; no token usage reporting |
+| `api`            | Anthropic API            | ~$0.04/session  | prompt caching, `--batch` (Message Batches, ~50% off structuring), exact per-stage cost tracking |
 
-To enable LLM extraction:
-
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-mojo extract
-```
+Rule-based features (git/folder scan, seed import, vault, advisory
+generation) never call an LLM and work with no backend at all.
 
 ## Demo: Open-Source Repositories
 

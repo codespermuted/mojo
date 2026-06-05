@@ -8,6 +8,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Pluggable LLM backends** (`extraction.backend` / `--backend`):
+  `claude-cli` (headless `claude -p`, default, $0 on subscription),
+  `codex-cli` (headless `codex exec`, $0), `api` (original Anthropic path,
+  keeps `--batch` + cost tracking). The previously removed `claude-code`
+  headless backend was dropped for unpredictable billing; `claude-cli`
+  resolves that by stripping `ANTHROPIC_API_KEY` from the child env,
+  forcing subscription auth — no key, no silent billing.
+- **Codex session support**: rollout JSONL auto-detection in the parser
+  (session_meta cwd → project, synthetic harness messages filtered) and
+  `mojo scan sessions --source claude|codex|all` backfill.
+- **Claim/observation model**: new `observations` table. Dedup no longer
+  discards re-extractions — a re-observation is recorded as evidence;
+  supporting observations from ≥ 2 distinct projects (no refutations) set
+  `generalization_suggested`. Promotion remains a human decision.
+- **Obsidian vault** (`mojo vault sync|export|import|init`): one claim =
+  one markdown note under `vault.path` (default `~/mojo-vault`).
+  Frontmatter is the review UI; ownership split keeps two-way sync safe
+  (human fields ← vault, machine fields ← DB). Auto-generated
+  `REVIEW-QUEUE.md` lists pending reviews and generalization candidates.
+- **Auto-extraction on SessionEnd**: the hook spawns a detached
+  `mojo extract --session ...` (log: `~/.mojo/logs/auto-extract.log`),
+  gated by `extraction.auto_extract` and recursion-guarded via
+  `MOJO_EXTRACTION=1` so headless extraction sessions never re-trigger
+  themselves.
+- `mojo_config.load_config()` — packaged defaults deep-merged with
+  `~/.mojo/config.yaml`.
+
+### Changed
+- `--parallel` prefilter is now thread-based and works with every backend
+  (was asyncio + Anthropic-only).
+- `anthropic` is imported lazily — CLI-backend users don't need the package
+  configured.
+
+### Previous unreleased entries
 - `mojo dashboard-export` — bundles the dashboard into a single read-only HTML file
   with an embedded snapshot, so knowledge views can be shared without a backend.
 - `mojo extract --project <path>` / `-p` — scope extraction to one project. Defaults
