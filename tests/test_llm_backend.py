@@ -26,6 +26,7 @@ class FakeProc:
 
 
 def test_claude_cli_complete(cli_available, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     captured = {}
 
     def fake_run(cmd, **kwargs):
@@ -52,6 +53,8 @@ def test_claude_cli_complete(cli_available, monkeypatch):
     assert result["model"] == "claude-cli:haiku"
     # recursion guard exported to the child process
     assert captured["env"][EXTRACTION_ENV_FLAG] == "1"
+    # API key stripped → subscription auth forced, zero-cost claim honest
+    assert "ANTHROPIC_API_KEY" not in captured["env"]
     # headless flags present
     assert "--no-session-persistence" in captured["cmd"]
     assert "--model" in captured["cmd"]

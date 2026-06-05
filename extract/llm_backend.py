@@ -64,9 +64,18 @@ def _zero_usage() -> dict:
     }
 
 
-def _child_env() -> dict:
+def _child_env(strip_api_keys: bool = False) -> dict:
     env = dict(os.environ)
     env[EXTRACTION_ENV_FLAG] = "1"
+    if strip_api_keys:
+        # The claude-cli backend promises zero API cost. If an
+        # ANTHROPIC_API_KEY leaks into the child env, `claude -p` may bill
+        # it instead of the subscription — the exact ambiguity that got an
+        # earlier headless backend removed (see CHANGELOG). Stripping the
+        # key forces subscription auth: not logged in → loud error, never
+        # silent billing.
+        env.pop("ANTHROPIC_API_KEY", None)
+        env.pop("ANTHROPIC_AUTH_TOKEN", None)
     return env
 
 
@@ -103,7 +112,7 @@ class ClaudeCLIBackend(LLMBackend):
         try:
             proc = subprocess.run(
                 cmd, input=user, capture_output=True, text=True,
-                timeout=self.timeout, env=_child_env(),
+                timeout=self.timeout, env=_child_env(strip_api_keys=True),
             )
         except subprocess.TimeoutExpired as e:
             raise BackendError(f"claude -p timed out after {self.timeout}s") from e
