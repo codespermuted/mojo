@@ -237,7 +237,12 @@ def turns_to_conversation_text(turns: list[dict], max_tokens: int = 15000) -> st
         role = "USER" if turn["role"] == "user" else "CLAUDE"
         content = turn["content"]
 
-        # Include tool use summaries for assistant turns
+        # Tool-only turns (no text) carry no tacit knowledge and bloat
+        # both the filter prompt and evidence excerpts with
+        # "[Tools used: Edit]" noise — skip them. Turns that *also* have
+        # text keep a compact tool summary for context.
+        if not content.strip():
+            continue
         if turn["tool_uses"]:
             tools = ", ".join(t["name"] for t in turn["tool_uses"])
             content += f"\n[Tools used: {tools}]"

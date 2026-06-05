@@ -116,24 +116,22 @@ def evidence_based_grade(item: dict) -> str:
     Criteria (first match wins):
 
     F - Contested:  confidence < 0.3, or never used for > 180 days.
-    A - Verified:   >= 2 related_ids (multi-source), or (usage >= 3 AND approved).
+    A - Verified:   independently observed in >= 2 distinct projects
+                    (generalization_suggested), or (usage >= 3 AND approved).
     B - Corroborated: has non-empty reasoning AND approved.
     D - Inferred:   confidence < 0.5, or (no reasoning AND not approved).
     C - Reported:   default for auto-extracted items.
+
+    Note: TF-IDF related_ids deliberately do NOT count as "multi-source" —
+    similar items extracted from the same session are one observation, not
+    independent evidence. Cross-project observations are.
     """
     approved = bool(item.get("approved", 0))
     usage = item.get("usage_count", 0) or 0
     reasoning_text = (item.get("reasoning") or "").strip()
     has_reasoning = bool(reasoning_text)
     confidence = item.get("confidence", 0.5) or 0.0
-    related = item.get("related_ids") or []
-    if isinstance(related, str):
-        import json as _json
-        try:
-            related = _json.loads(related)
-        except (ValueError, TypeError):
-            related = []
-    has_multiple_sources = len(related) >= 2
+    has_multiple_sources = bool(item.get("generalization_suggested", 0))
 
     # F: Contested — long unused or very low confidence
     created = item.get("created_at", "")

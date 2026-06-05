@@ -77,3 +77,19 @@ def test_claude_format_still_parses(tmp_path):
     assert data["session_id"] == "claude-1"
     assert data["project_path"] == "/home/user/p2"
     assert data["turn_count"] == 2
+
+
+def test_tool_only_turns_excluded_from_conversation_text():
+    from extract.parser import turns_to_conversation_text
+
+    turns = [
+        {"role": "user", "content": "fix the bug", "timestamp": "", "tool_uses": []},
+        {"role": "assistant", "content": "", "timestamp": "",
+         "tool_uses": [{"name": "Edit", "input": "{}"}]},  # noise
+        {"role": "assistant", "content": "done, root cause was X",
+         "timestamp": "", "tool_uses": [{"name": "Bash", "input": "{}"}]},
+    ]
+    text = turns_to_conversation_text(turns)
+    assert "fix the bug" in text
+    assert "root cause" in text
+    assert text.count("[Tools used:") == 1  # only on the turn with text

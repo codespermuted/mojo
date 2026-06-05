@@ -90,3 +90,18 @@ def test_invalid_stance_rejected(db):
     save_knowledge(db, _item())
     with pytest.raises(ValueError):
         record_observation(db, "ts-001", stance="maybe")
+
+
+def test_grade_a_requires_cross_project_evidence(db):
+    """Same-session TF-IDF neighbors must not inflate the grade to A."""
+    item = _item()
+    item["related_ids"] = ["x-001", "x-002"]  # similar items, same session
+    save_knowledge(db, item)
+    row = db.execute("SELECT * FROM knowledge WHERE id='ts-001'").fetchone()
+    assert db_ops.evidence_based_grade(db_ops._row_to_dict(row)) != "A"
+
+    # cross-project observations are real multi-source evidence
+    record_observation(db, "ts-001", project_path="/home/u/proj-a", stance="supports")
+    record_observation(db, "ts-001", project_path="/home/u/proj-b", stance="supports")
+    row = db.execute("SELECT * FROM knowledge WHERE id='ts-001'").fetchone()
+    assert db_ops.evidence_based_grade(db_ops._row_to_dict(row)) == "A"
