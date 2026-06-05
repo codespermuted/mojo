@@ -711,13 +711,18 @@ def main():
                        help="Only show candidates, don't save")
 
     # mojo scan sessions
-    sess_p = sub.add_parser("sessions", help="Backfill from past Claude Code sessions")
+    sess_p = sub.add_parser(
+        "sessions", help="Backfill from past Claude Code / Codex sessions")
     sess_p.add_argument("--max-sessions", type=int, default=50)
     sess_p.add_argument(
         "--project", "-p",
         help="Only register sessions from this project path "
              "(defaults to the current working directory). Use "
              "'--project all' to backfill every project on disk.",
+    )
+    sess_p.add_argument(
+        "--source", choices=["claude", "codex", "all"], default="all",
+        help="Which agent's session logs to scan (default: all)",
     )
 
     notes_p = sub.add_parser("notes", help="Import markdown notes/docs as raw evidence")
@@ -739,7 +744,8 @@ def main():
             proj: Optional[str] = None
         else:
             proj = args.project or str(Path.cwd())
-        backfill_sessions(args.max_sessions, project_path=proj)
+        backfill_sessions(args.max_sessions, project_path=proj,
+                          source=args.source)
     elif args.cmd == "notes":
         scan_markdown_notes(args.path, max_files=args.max_files, dry_run=args.dry_run)
     else:
@@ -788,51 +794,116 @@ def _iter_session_dirs(project_path: Optional[str]) -> list[Path]:
     return [target] if target.exists() else []
 
 
+def _codex_session_meta(jsonl: Path) -> tuple[Optional[str], Optional[str]]:
+    """Return (session_id, cwd) from a Codex rollout's session_meta event."""
+    try:
+        with jsonl.open(encoding="utf-8") as f:
+            for _ in range(5):  # session_meta is the first real event
+                line = f.readline()
+                if not line:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if event.get("type") == "session_meta":
+                    payload = event.get("payload") or {}
+                    return payload.get("id"), payload.get("cwd")
+    except OSError:
+        pass
+    return None, None
+
+
+def _iter_codex_sessions(project_path: Optional[str]) -> list[tuple[Path, str, str]]:
+    """Yield (rollout_path, session_id, project_path) for Codex sessions.
+
+    Codex stores every rollout under ``~/.codex/sessions/YYYY/MM/DD/`` with
+    the working directory recorded inside the file's session_meta event —
+    so project filtering requires peeking into each file. Sessions whose
+    cwd sits *inside* the requested project also count (subdir launches).
+    """
+    codex_root = Path.home() / ".codex" / "sessions"
+    if not codex_root.exists():
+        return []
+
+    target = (str(Path(project_path).expanduser().resolve())
+              if project_path else None)
+    mojo_repo = str(Path(__file__).resolve().parent)
+
+    found = []
+    for jsonl in sorted(codex_root.rglob("*.jsonl"),
+                        key=lambda p: p.stat().st_mtime, reverse=True):
+        session_id, cwd = _codex_session_meta(jsonl)
+        if not cwd:
+            continue
+        if cwd == mojo_repo or cwd.startswith(mojo_repo + "/"):
+            continue  # don't feed Mojo's own development sessions back in
+        if target is not None:
+            if not (cwd == target or cwd.startswith(target + "/")):
+                continue
+            project = target
+        else:
+            project = cwd
+        found.append((jsonl, session_id or jsonl.stem, project))
+    return found
+
+
 def backfill_sessions(max_sessions: int = 50,
-                      project_path: Optional[str] = None):
-    """Register past Claude Code sessions for extraction.
+                      project_path: Optional[str] = None,
+                      source: str = "all"):
+    """Register past Claude Code and/or Codex sessions for extraction.
 
     When ``project_path`` is given (default: cwd), only sessions from that
-    project's Claude Code transcript directory are registered. Pass
-    ``project_path=None`` explicitly (``--project all`` on the CLI) to
-    backfill every project on the machine — this is the old global
-    behaviour and should be used deliberately.
+    project are registered. Pass ``project_path=None`` explicitly
+    (``--project all`` on the CLI) to backfill every project on the
+    machine — this is the old global behaviour and should be used
+    deliberately.
     """
-    session_dirs = _iter_session_dirs(project_path)
-    if not session_dirs:
-        if project_path:
+    init_db()
+    db = get_db()
+    registered = 0
+
+    if source in ("claude", "all"):
+        session_dirs = _iter_session_dirs(project_path)
+        if not session_dirs and source == "claude" and project_path:
             console.print(
                 f"[yellow]No Claude Code sessions found for "
                 f"{project_path}[/yellow]\n"
                 f"[dim]Expected transcript dir: "
                 f"{_encoded_project_dir(project_path)}[/dim]"
             )
-        else:
-            console.print("[yellow]No Claude Code sessions found.[/yellow]")
-        return
+        for project_dir in session_dirs:
+            # Check both session structures (legacy vs current)
+            for search_dir in [project_dir / "sessions", project_dir]:
+                if not search_dir.exists():
+                    continue
+                for jsonl in sorted(search_dir.glob("*.jsonl"),
+                                    key=lambda p: p.stat().st_mtime,
+                                    reverse=True):
+                    if registered >= max_sessions:
+                        break
 
-    init_db()
-    db = get_db()
-    registered = 0
+                    session_id = jsonl.stem
+                    db.execute("""
+                        INSERT OR IGNORE INTO raw_sessions
+                        (id, transcript_path, project_path)
+                        VALUES (?, ?, ?)
+                    """, (session_id, str(jsonl), str(project_dir)))
+                    registered += 1
 
-    for project_dir in session_dirs:
-        # Check both session structures (legacy vs current)
-        for search_dir in [project_dir / "sessions", project_dir]:
-            if not search_dir.exists():
-                continue
-            for jsonl in sorted(search_dir.glob("*.jsonl"),
-                                key=lambda p: p.stat().st_mtime,
-                                reverse=True):
-                if registered >= max_sessions:
-                    break
-
-                session_id = jsonl.stem
-                db.execute("""
-                    INSERT OR IGNORE INTO raw_sessions
-                    (id, transcript_path, project_path)
-                    VALUES (?, ?, ?)
-                """, (session_id, str(jsonl), str(project_dir)))
-                registered += 1
+    if source in ("codex", "all"):
+        for jsonl, session_id, project in _iter_codex_sessions(project_path):
+            if registered >= max_sessions:
+                break
+            db.execute("""
+                INSERT OR IGNORE INTO raw_sessions
+                (id, transcript_path, project_path)
+                VALUES (?, ?, ?)
+            """, (session_id, str(jsonl), project))
+            registered += 1
 
     db.commit()
     db.close()

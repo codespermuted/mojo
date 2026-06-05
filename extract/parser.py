@@ -1,13 +1,26 @@
-"""Parse Claude Code session JSONL transcripts into structured turns."""
+"""Parse Claude Code / Codex session JSONL transcripts into structured turns."""
 
 import json
+import re
 from pathlib import Path
 from typing import Optional
 
+# Codex rollout files wrap every event as {"timestamp", "type", "payload"}.
+_CODEX_EVENT_TYPES = {"session_meta", "response_item", "event_msg",
+                      "turn_context", "compacted"}
+
+# Codex injects harness context as user-role messages; these carry no
+# tacit knowledge and would pollute signal detection.
+_CODEX_SYNTHETIC_PREFIX = re.compile(
+    r"\A<(environment_context|goal_context|permissions|user_instructions|"
+    r"turn_aborted|AGENTS|system)", re.IGNORECASE)
+
 
 def parse_session(jsonl_path: str) -> dict:
-    """Parse a Claude Code JSONL transcript into structured data.
-    
+    """Parse a Claude Code or Codex JSONL transcript into structured data.
+
+    The format is auto-detected from the first event line.
+
     Returns:
         {
             "session_id": str,
@@ -21,6 +34,9 @@ def parse_session(jsonl_path: str) -> dict:
     path = Path(jsonl_path)
     if not path.exists():
         raise FileNotFoundError(f"Transcript not found: {jsonl_path}")
+
+    if _is_codex_rollout(path):
+        return _parse_codex_session(path)
 
     turns = []
     session_id = None
@@ -97,6 +113,107 @@ def parse_session(jsonl_path: str) -> dict:
                     "timestamp": ts,
                     "tool_uses": tool_uses,
                 })
+
+    return {
+        "session_id": session_id or path.stem,
+        "project_path": project_path or "",
+        "turns": turns,
+        "turn_count": len(turns),
+        "started_at": timestamps[0] if timestamps else "",
+        "ended_at": timestamps[-1] if timestamps else "",
+    }
+
+
+def _is_codex_rollout(path: Path) -> bool:
+    """Detect a Codex rollout file from its first parseable event."""
+    try:
+        with path.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    return False
+                return (isinstance(event, dict)
+                        and "payload" in event
+                        and event.get("type") in _CODEX_EVENT_TYPES)
+    except OSError:
+        return False
+    return False
+
+
+def _codex_text(content) -> str:
+    """Join input_text/output_text blocks from a Codex message payload."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") in (
+                    "input_text", "output_text", "text"):
+                parts.append(block.get("text", ""))
+        return "\n".join(parts)
+    return ""
+
+
+def _parse_codex_session(path: Path) -> dict:
+    """Parse a Codex rollout JSONL into the same shape as Claude sessions."""
+    turns: list[dict] = []
+    session_id = None
+    project_path = None
+    timestamps: list[str] = []
+    pending_tools: list[dict] = []
+
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        ts = event.get("timestamp", "")
+        if ts:
+            timestamps.append(ts)
+        etype = event.get("type", "")
+        payload = event.get("payload") or {}
+
+        if etype == "session_meta":
+            session_id = payload.get("id") or session_id
+            project_path = payload.get("cwd") or project_path
+            continue
+
+        if etype != "response_item":
+            continue
+
+        ptype = payload.get("type", "")
+        if ptype in ("function_call", "custom_tool_call"):
+            pending_tools.append({
+                "name": payload.get("name", ""),
+                "input": _truncate(str(payload.get("arguments")
+                                       or payload.get("input") or ""),
+                                   max_len=500),
+            })
+            continue
+
+        if ptype != "message":
+            continue
+
+        role = payload.get("role", "")
+        text = _codex_text(payload.get("content")).strip()
+        if role == "user":
+            if not text or _CODEX_SYNTHETIC_PREFIX.match(text):
+                continue
+            turns.append({"role": "user", "content": text,
+                          "timestamp": ts, "tool_uses": []})
+        elif role == "assistant":
+            if not text and not pending_tools:
+                continue
+            turns.append({"role": "assistant", "content": text,
+                          "timestamp": ts, "tool_uses": pending_tools})
+            pending_tools = []
 
     return {
         "session_id": session_id or path.stem,
