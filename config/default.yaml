@@ -2,12 +2,22 @@
 # Location: ~/.mojo/config.yaml
 
 extraction:
-  auto_extract: true
-  batch_mode: false               # true → 하루 1회 배치 (Batch API)
-  filter_model: "claude-haiku-4-5-20251001"
-  structure_model: "claude-sonnet-4-6"
+  # LLM backend: claude-cli (headless `claude -p`, 구독 — API 비용 0, 기본값)
+  #              codex-cli (headless `codex exec`, 구독 — API 비용 0)
+  #              api (Anthropic API, ANTHROPIC_API_KEY 필요, --batch 지원)
+  backend: claude-cli
+  models:
+    claude-cli: { filter: haiku, structure: sonnet }
+    codex-cli:  { filter: null,  structure: null }   # null → codex 기본 모델
+    api:        { filter: "claude-haiku-4-5-20251001",
+                  structure: "claude-sonnet-4-6" }
+  cli_timeout_s: 600              # headless CLI 호출 타임아웃
+  auto_extract: true              # SessionEnd hook이 백그라운드 추출을 띄울지
   min_turns: 5                    # 이 미만 세션 스킵
   max_session_tokens: 20000       # 초과 시 요약 후 추출
+
+vault:
+  path: ~/mojo-vault              # Obsidian vault 위치 (md가 인간 편집의 진실)
 
 serving:
   token_budget: 3000              # MOJO.md advisory context token budget

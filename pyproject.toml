@@ -72,6 +72,7 @@ packages = ["extract", "serve", "hooks", "dashboard"]
 "init.py" = "init.py"
 "import_seed.py" = "import_seed.py"
 "mojo_cli.py" = "mojo_cli.py"
+"mojo_config.py" = "mojo_config.py"
 "advisory.py" = "advisory.py"
 "companion.py" = "companion.py"
 "db/schema.sql" = "db/schema.sql"

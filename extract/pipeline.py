@@ -1,18 +1,24 @@
 """Main extraction pipeline: Session JSONL → Structured knowledge.
 
-Optimizations:
-- Prompt caching (cache_control: ephemeral) on static system prompts.
-- Message Batches API for Sonnet structuring (`--batch`, ~50% cheaper).
-- Async parallel Haiku filter across sessions (`--parallel N`).
+LLM calls go through a pluggable backend (extract/llm_backend.py):
+
+- claude-cli (default): headless `claude -p`, zero API cost (subscription)
+- codex-cli: headless `codex exec`, zero API cost (subscription)
+- api: Anthropic API with prompt caching; supports --batch (Message
+  Batches, ~50% off Sonnet structuring) and cost tracking.
+
+Other optimizations:
+- Parallel filter stage across sessions (`--parallel N`, thread-based,
+  works with every backend).
 - try/finally guard prevents duplicate token spend on retry.
 """
 
-import asyncio
 import json
 import os
 import re
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 
@@ -41,30 +47,30 @@ def _load_dotenv() -> None:
 
 _load_dotenv()
 
-import anthropic
 from rich.console import Console
-from rich.table import Table
 
 # Resolve imports whether run as module or script
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from db_ops import (
     get_db, get_all_knowledge, get_pending_sessions,
-    init_db, mark_session_extracted, save_knowledge, log_extraction_cost
+    init_db, mark_session_extracted, save_knowledge, log_extraction_cost,
+    record_observation,
+)
+from mojo_config import load_config
+from extract.llm_backend import (
+    BackendError, LLMBackend, ROLE_FILTER, ROLE_STRUCTURE, get_backend,
 )
 from extract.parser import parse_session, turns_to_conversation_text
 from extract.signals import score_session_value
-from extract.dedup import is_duplicate, find_related
+from extract.dedup import find_duplicate, find_related
 
 console = Console()
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 
-HAIKU_MODEL = "claude-haiku-4-5-20251001"
-SONNET_MODEL = "claude-sonnet-4-6"
-
-# Haiku's 200k-token context maps to roughly ~800k characters. Cap filter
-# input well below that so the prompt + system overhead + output still fit.
+# Filter-stage context maps to roughly ~800k characters at 200k tokens.
+# Cap filter input well below that so prompt + system overhead + output fit.
 FILTER_INPUT_CHAR_BUDGET = 600_000
 
 
@@ -106,31 +112,20 @@ def _parse_json_payload(text: str) -> dict:
     text = text.strip()
     if text.startswith("```"):
         text = text.split("\n", 1)[1].rsplit("```", 1)[0]
-    return json.loads(text)
+    # CLI backends sometimes wrap JSON in prose; recover the outermost
+    # object if direct parsing fails.
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start, end = text.find("{"), text.rfind("}")
+        if start != -1 and end > start:
+            return json.loads(text[start:end + 1])
+        raise
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Backend: Anthropic API (with prompt caching)
+# LLM stages (backend-agnostic)
 # ─────────────────────────────────────────────────────────────────────────────
-
-def _cached_system(system_text: str) -> list[dict]:
-    """Build a system block with ephemeral cache_control."""
-    return [{
-        "type": "text",
-        "text": system_text,
-        "cache_control": {"type": "ephemeral"},
-    }]
-
-
-def _usage_dict(usage) -> dict:
-    """Extract usage + cache stats from an Anthropic response."""
-    return {
-        "input_tokens": getattr(usage, "input_tokens", 0),
-        "output_tokens": getattr(usage, "output_tokens", 0),
-        "cache_creation_input_tokens": getattr(usage, "cache_creation_input_tokens", 0) or 0,
-        "cache_read_input_tokens": getattr(usage, "cache_read_input_tokens", 0) or 0,
-    }
-
 
 _RELATION_PROMPT = (
     "You connect two pieces of domain knowledge that a similarity search "
@@ -143,13 +138,15 @@ _RELATION_PROMPT = (
 )
 
 
-def _explain_relation(client: "anthropic.Anthropic", source: dict,
-                      target: dict, model: str = HAIKU_MODEL) -> str:
-    """One-sentence Haiku explanation of why two knowledge items are related.
+def _explain_relation(backend: Optional[LLMBackend], source: dict,
+                      target: dict) -> str:
+    """One-sentence explanation of why two knowledge items are related.
 
     Called after the TF-IDF `find_related` picks a neighbor so the edge
     carries human-readable context instead of a bare ID link.
     """
+    if backend is None:
+        return ""
     try:
         user_content = (
             f"Item A — {source.get('type', '')} · {source.get('domain', '')}\n"
@@ -159,21 +156,16 @@ def _explain_relation(client: "anthropic.Anthropic", source: dict,
             f"Title: {target.get('title', '')}\n"
             f"Content: {(target.get('content') or '')[:400]}"
         )
-        response = client.messages.create(
-            model=model,
-            max_tokens=80,
-            system=_cached_system(_RELATION_PROMPT),
-            messages=[{"role": "user", "content": user_content}],
-        )
-        text = (response.content[0].text or "").strip()
-        return text[:160]
-    except Exception as e:
+        result = backend.complete(_RELATION_PROMPT, user_content,
+                                  max_tokens=80, role=ROLE_FILTER)
+        return result["text"].strip()[:160]
+    except (BackendError, KeyError) as e:
         console.print(f"[dim]relation-reason failed: {e}[/dim]")
         return ""
 
 
 def _truncate_for_filter(transcript_text: str) -> str:
-    """Trim oversized transcripts to fit Haiku's context window.
+    """Trim oversized transcripts to fit the filter model's context window.
 
     Drops the oldest turns and prepends a marker, preserving the tail where
     corrections and conclusions are most likely to live.
@@ -185,39 +177,19 @@ def _truncate_for_filter(transcript_text: str) -> str:
             + transcript_text[-FILTER_INPUT_CHAR_BUDGET:])
 
 
-def run_filter_api(client: anthropic.Anthropic, transcript_text: str,
-                   model: str = HAIKU_MODEL) -> dict:
-    """Stage 1: Haiku filters for knowledge candidates (cached system)."""
+def run_filter(backend: LLMBackend, transcript_text: str) -> dict:
+    """Stage 1: cheap model filters for knowledge candidates."""
     transcript_text = _truncate_for_filter(transcript_text)
     system_text, user_template = split_prompt("filter")
     user_content = user_template.replace("{transcript}", transcript_text)
 
-    response = client.messages.create(
-        model=model,
-        max_tokens=2000,
-        system=_cached_system(system_text),
-        messages=[{"role": "user", "content": user_content}],
-    )
-    result = _parse_json_payload(response.content[0].text)
-    result["_usage"] = _usage_dict(response.usage)
-    return result
-
-
-async def run_filter_api_async(client: anthropic.AsyncAnthropic,
-                               transcript_text: str,
-                               model: str = HAIKU_MODEL) -> dict:
-    transcript_text = _truncate_for_filter(transcript_text)
-    system_text, user_template = split_prompt("filter")
-    user_content = user_template.replace("{transcript}", transcript_text)
-    response = await client.messages.create(
-        model=model,
-        max_tokens=2000,
-        system=_cached_system(system_text),
-        messages=[{"role": "user", "content": user_content}],
-    )
-    result = _parse_json_payload(response.content[0].text)
-    result["_usage"] = _usage_dict(response.usage)
-    return result
+    result = backend.complete(system_text, user_content,
+                              max_tokens=2000, role=ROLE_FILTER)
+    parsed = _parse_json_payload(result["text"])
+    parsed["_usage"] = result["usage"]
+    parsed["_cost_usd"] = result["cost_usd"]
+    parsed["_model"] = result["model"]
+    return parsed
 
 
 def _build_structure_user(candidate: dict, excerpt: str,
@@ -236,47 +208,28 @@ def _build_structure_user(candidate: dict, excerpt: str,
             .replace("{existing_knowledge}", existing_summary or "(none)"))
 
 
-def run_structure_api(client: anthropic.Anthropic, candidate: dict,
-                      excerpt: str, existing_knowledge: list[dict],
-                      model: str = SONNET_MODEL) -> dict:
-    """Stage 2: Sonnet structures a candidate (cached system)."""
+def run_structure(backend: LLMBackend, candidate: dict, excerpt: str,
+                  existing_knowledge: list[dict]) -> dict:
+    """Stage 2: strong model structures a candidate."""
     system_text, _ = split_prompt("structure")
     user_content = _build_structure_user(candidate, excerpt, existing_knowledge)
 
-    response = client.messages.create(
-        model=model,
-        max_tokens=1500,
-        system=_cached_system(system_text),
-        messages=[{"role": "user", "content": user_content}],
-    )
-    result = _parse_json_payload(response.content[0].text)
-    result["_usage"] = _usage_dict(response.usage)
-    return result
+    result = backend.complete(system_text, user_content,
+                              max_tokens=1500, role=ROLE_STRUCTURE)
+    parsed = _parse_json_payload(result["text"])
+    parsed["_usage"] = result["usage"]
+    parsed["_cost_usd"] = result["cost_usd"]
+    parsed["_model"] = result["model"]
+    return parsed
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Backend dispatch
+# Message Batches (api backend only — 50% off, async completion)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_filter(client, transcript_text: str, model: str = HAIKU_MODEL) -> dict:
-    return run_filter_api(client, transcript_text, model)
-
-
-def run_structure(client, candidate: dict, excerpt: str,
-                  existing_knowledge: list[dict],
-                  model: str = SONNET_MODEL) -> dict:
-    return run_structure_api(client, candidate, excerpt, existing_knowledge, model)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Message Batches (Sonnet structuring — 50% off, async completion)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def run_structure_batch(client: anthropic.Anthropic,
-                        jobs: list[dict],
-                        model: str = SONNET_MODEL,
+def run_structure_batch(backend, jobs: list[dict],
                         poll_interval: int = 15) -> dict[str, dict]:
-    """Submit structuring jobs via Message Batches API.
+    """Submit structuring jobs via Message Batches API (api backend only).
 
     jobs: [{"custom_id": str, "candidate": dict, "excerpt": str, "existing": list}, ...]
     Returns: {custom_id: parsed_result_dict_with__usage}
@@ -284,6 +237,10 @@ def run_structure_batch(client: anthropic.Anthropic,
     from anthropic.types.messages.batch_create_params import Request
     from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
 
+    from extract.llm_backend import _api_cost
+
+    client = backend.client
+    model = backend.model_for(ROLE_STRUCTURE)
     system_text, _ = split_prompt("structure")
     requests = []
     for job in jobs:
@@ -294,7 +251,11 @@ def run_structure_batch(client: anthropic.Anthropic,
             params=MessageCreateParamsNonStreaming(
                 model=model,
                 max_tokens=1500,
-                system=_cached_system(system_text),
+                system=[{
+                    "type": "text",
+                    "text": system_text,
+                    "cache_control": {"type": "ephemeral"},
+                }],
                 messages=[{"role": "user", "content": user_content}],
             ),
         ))
@@ -329,7 +290,16 @@ def run_structure_batch(client: anthropic.Anthropic,
         except Exception as e:
             console.print(f"[red]Parse failed for {cid}: {e}[/red]")
             continue
-        parsed["_usage"] = _usage_dict(msg.usage)
+        usage = msg.usage
+        usage_dict = {
+            "input_tokens": getattr(usage, "input_tokens", 0),
+            "output_tokens": getattr(usage, "output_tokens", 0),
+            "cache_read_input_tokens": getattr(usage, "cache_read_input_tokens", 0) or 0,
+            "cache_creation_input_tokens": getattr(usage, "cache_creation_input_tokens", 0) or 0,
+        }
+        parsed["_usage"] = usage_dict
+        parsed["_cost_usd"] = _api_cost(model, usage_dict) * 0.5  # batch discount
+        parsed["_model"] = model
         results[cid] = parsed
     return results
 
@@ -340,7 +310,8 @@ def run_structure_batch(client: anthropic.Anthropic,
 
 def extract_session(session_path: str, session_id: str,
                     dry_run: bool = False,
-                    use_batch: bool = False) -> list[dict]:
+                    use_batch: bool = False,
+                    backend: Optional[LLMBackend] = None) -> list[dict]:
     """Full extraction pipeline for a single session.
 
     Re-extraction guard: session is marked `extracted = 1` in a try/finally,
@@ -348,7 +319,6 @@ def extract_session(session_path: str, session_id: str,
     """
     init_db()
     db = get_db()
-    client = anthropic.Anthropic()
     extracted: list[dict] = []
 
     try:
@@ -372,29 +342,23 @@ def extract_session(session_path: str, session_id: str,
         # 3. Convert to text for LLM
         transcript_text = turns_to_conversation_text(session_data["turns"])
 
-        # 4. Stage 1: Haiku filter
-        console.print("[blue]Stage 1: Filtering (Haiku)...[/blue]")
+        # 4. Stage 1: filter
         if dry_run:
             console.print("[dim]Dry run — skipping LLM calls[/dim]")
             return []
 
+        if backend is None:
+            backend = get_backend(config=load_config())
+        use_batch = _validate_batch_flag(use_batch, backend)
+
+        console.print(f"[blue]Stage 1: Filtering ({backend.model_for(ROLE_FILTER)})...[/blue]")
         try:
-            filter_result = run_filter(client, transcript_text)
-        except (json.JSONDecodeError, anthropic.APIError, RuntimeError) as e:
+            filter_result = run_filter(backend, transcript_text)
+        except (json.JSONDecodeError, BackendError) as e:
             console.print(f"[red]Filter failed: {e}[/red]")
             return []
 
-        haiku_usage = filter_result.get("_usage", {})
-        haiku_cost = _estimate_cost("haiku", haiku_usage)
-        log_extraction_cost(
-            db, session_id, "filter", "haiku",
-            haiku_usage.get("input_tokens", 0),
-            haiku_usage.get("output_tokens", 0),
-            haiku_cost,
-            cache_read_input_tokens=haiku_usage.get("cache_read_input_tokens", 0),
-            cache_creation_input_tokens=haiku_usage.get("cache_creation_input_tokens", 0),
-        )
-        _log_cache_stats("filter", haiku_usage)
+        _log_stage_cost(db, session_id, "filter", filter_result)
 
         if not filter_result.get("has_knowledge"):
             console.print("[yellow]No knowledge candidates found[/yellow]")
@@ -403,15 +367,15 @@ def extract_session(session_path: str, session_id: str,
         candidates = filter_result.get("candidates", [])
         console.print(f"[green]Found {len(candidates)} candidate(s)[/green]")
 
-        # 5. Stage 2: Sonnet structure
+        # 5. Stage 2: structure
         existing = get_all_knowledge(db)
 
         if use_batch and len(candidates) > 0:
             extracted = _structure_and_save_batch(
-                db, client, session_id, session_data, candidates, existing)
+                db, backend, session_id, session_data, candidates, existing)
         else:
             extracted = _structure_and_save_sync(
-                db, client, session_id, session_data, candidates, existing)
+                db, backend, session_id, session_data, candidates, existing)
 
         return extracted
     finally:
@@ -419,33 +383,43 @@ def extract_session(session_path: str, session_id: str,
         db.close()
 
 
-def _structure_and_save_sync(db, client, session_id, session_data,
+def _validate_batch_flag(use_batch: bool, backend: LLMBackend) -> bool:
+    if use_batch and backend.name != "api":
+        console.print(
+            "[yellow]--batch needs the api backend (Message Batches); "
+            f"running synchronously on {backend.name}.[/yellow]"
+        )
+        return False
+    return use_batch
+
+
+def _structure_and_save_sync(db, backend, session_id, session_data,
                              candidates, existing) -> list[dict]:
     extracted: list[dict] = []
     for i, candidate in enumerate(candidates):
         console.print(
             f"[blue]Stage 2: Structuring candidate {i+1}/{len(candidates)} "
-            f"(Sonnet)...[/blue]"
+            f"({backend.model_for(ROLE_STRUCTURE)})...[/blue]"
         )
         start, end = candidate.get("turn_range", [0, len(session_data["turns"])])
         excerpt_turns = session_data["turns"][start:end+1]
         excerpt = turns_to_conversation_text(excerpt_turns, max_tokens=3000)
 
         try:
-            knowledge = run_structure(client, candidate, excerpt, existing)
-        except (json.JSONDecodeError, anthropic.APIError, RuntimeError) as e:
+            knowledge = run_structure(backend, candidate, excerpt, existing)
+        except (json.JSONDecodeError, BackendError) as e:
             console.print(f"[red]Structure failed: {e}[/red]")
             continue
 
         _finalize_knowledge(
-            db, client, session_id, knowledge, existing, extracted,
+            db, backend, session_id, knowledge, existing, extracted,
             project_path=session_data.get("project_path", ""),
             evidence_excerpt=excerpt,
         )
     return extracted
 
 
-def _structure_and_save_batch(db, client, session_id, session_data,
+def _structure_and_save_batch(db, backend, session_id, session_data,
                               candidates, existing) -> list[dict]:
     """Submit all candidates to Batches API, then dedup+save sequentially."""
     jobs = []
@@ -460,7 +434,7 @@ def _structure_and_save_batch(db, client, session_id, session_data,
             "existing": existing,
         })
 
-    results = run_structure_batch(client, jobs)
+    results = run_structure_batch(backend, jobs)
 
     extracted: list[dict] = []
     # Preserve candidate order so dedup sees items deterministically
@@ -469,54 +443,58 @@ def _structure_and_save_batch(db, client, session_id, session_data,
         if not knowledge:
             continue
         _finalize_knowledge(
-            db, client, session_id, knowledge, existing, extracted,
-            is_batch=True,
+            db, backend, session_id, knowledge, existing, extracted,
             project_path=session_data.get("project_path", ""),
             evidence_excerpt=job["excerpt"],
         )
     return extracted
 
 
-def _finalize_knowledge(db, client, session_id, knowledge, existing, extracted,
-                        is_batch: bool = False, project_path: str = "",
+def _finalize_knowledge(db, backend, session_id, knowledge, existing, extracted,
+                        project_path: str = "",
                         evidence_excerpt: str = "") -> None:
-    """Log cost, dedup, find related, save, append to lists."""
-    sonnet_usage = knowledge.get("_usage", {})
-    sonnet_cost = _estimate_cost("sonnet", sonnet_usage, is_batch=is_batch)
-    log_extraction_cost(
-        db, session_id, "structure", "sonnet",
-        sonnet_usage.get("input_tokens", 0),
-        sonnet_usage.get("output_tokens", 0),
-        sonnet_cost,
-        cache_read_input_tokens=sonnet_usage.get("cache_read_input_tokens", 0),
-        cache_creation_input_tokens=sonnet_usage.get("cache_creation_input_tokens", 0),
-    )
-    _log_cache_stats("structure", sonnet_usage)
+    """Log cost, dedup-or-observe, find related, save, append to lists.
+
+    Re-observation is evidence, not noise: when the same claim already
+    exists, record an observation on the existing item instead of
+    discarding the extraction. Observations from *other* projects are what
+    later justify generalizing the item's scope.
+    """
+    _log_stage_cost(db, session_id, "structure", knowledge)
 
     knowledge.pop("_usage", None)
+    knowledge.pop("_cost_usd", None)
+    knowledge.pop("_model", None)
     knowledge.pop("practical_insight", None)
     suggested_state = knowledge.pop("suggested_promotion_state", None)
     human_review_required = knowledge.pop("human_review_required", None)
 
-    existing_contents = [k["content"] for k in existing]
-    is_dup, sim = is_duplicate(knowledge["content"], existing_contents)
-    if is_dup:
+    dup_of, sim = find_duplicate(knowledge["content"], existing)
+    if dup_of is not None:
         console.print(
-            f"[yellow]Duplicate (sim={sim}): {knowledge['title']}[/yellow]"
+            f"[cyan]Re-observation (sim={sim}) of [{dup_of['id']}] "
+            f"{dup_of['title']} — recording evidence[/cyan]"
+        )
+        record_observation(
+            db, dup_of["id"],
+            project_path=project_path,
+            session_id=session_id,
+            stance="supports",
+            note=f"Re-extracted as: {knowledge.get('title', '')}",
         )
         return
 
     related_pairs = find_related(knowledge["content"], existing)
     knowledge["related_ids"] = [rid for rid, _ in related_pairs]
     knowledge["related_scores"] = {rid: score for rid, score in related_pairs}
-    if related_pairs and client is not None:
+    if related_pairs:
         by_id = {it["id"]: it for it in existing}
         reasoning = {}
         for rid, _ in related_pairs:
             target = by_id.get(rid)
             if not target:
                 continue
-            reason = _explain_relation(client, knowledge, target)
+            reason = _explain_relation(backend, knowledge, target)
             if reason:
                 reasoning[rid] = reason
         if reasoning:
@@ -548,6 +526,13 @@ def _finalize_knowledge(db, client, session_id, knowledge, existing, extracted,
     knowledge.setdefault("approved", 0)
 
     save_knowledge(db, knowledge)
+    record_observation(
+        db, knowledge["id"],
+        project_path=project_path,
+        session_id=session_id,
+        stance="supports",
+        note="initial extraction",
+    )
     extracted.append(knowledge)
     existing.append(knowledge)
     console.print(
@@ -556,7 +541,16 @@ def _finalize_knowledge(db, client, session_id, knowledge, existing, extracted,
     )
 
 
-def _log_cache_stats(stage: str, usage: dict) -> None:
+def _log_stage_cost(db, session_id: str, stage: str, result: dict) -> None:
+    usage = result.get("_usage", {})
+    log_extraction_cost(
+        db, session_id, stage, result.get("_model", "unknown"),
+        usage.get("input_tokens", 0),
+        usage.get("output_tokens", 0),
+        result.get("_cost_usd", 0.0),
+        cache_read_input_tokens=usage.get("cache_read_input_tokens", 0),
+        cache_creation_input_tokens=usage.get("cache_creation_input_tokens", 0),
+    )
     cr = usage.get("cache_read_input_tokens", 0)
     cw = usage.get("cache_creation_input_tokens", 0)
     if cr or cw:
@@ -567,16 +561,17 @@ def _log_cache_stats(stage: str, usage: dict) -> None:
 # Batch driver over multiple sessions
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def _prefilter_sessions_async(pending: list[dict]) -> dict[str, dict]:
-    """Run Haiku filter in parallel across multiple sessions.
+def _prefilter_sessions(pending: list[dict], backend: LLMBackend,
+                        workers: int) -> dict[str, dict]:
+    """Run the filter stage in parallel threads across multiple sessions.
 
-    Returns {session_id: filter_result_or_None}. Sessions that fail
-    filtering get None and will be retried sequentially.
+    Works with every backend (CLI subprocesses and API calls both block
+    happily inside threads). Returns {session_id: filter_result_or_None};
+    sessions that fail filtering get None and are retried sequentially.
     """
-    client = anthropic.AsyncAnthropic()
     results: dict[str, dict] = {}
 
-    async def _one(session):
+    def _one(session):
         sid = session["id"]
         try:
             session_data = parse_session(session["transcript_path"])
@@ -586,23 +581,24 @@ async def _prefilter_sessions_async(pending: list[dict]) -> dict[str, dict]:
             if not value["should_extract"]:
                 return sid, {"_skip": "low_signal"}
             transcript_text = turns_to_conversation_text(session_data["turns"])
-            fr = await run_filter_api_async(client, transcript_text)
+            fr = run_filter(backend, transcript_text)
             fr["_session_data"] = session_data
             return sid, fr
         except Exception as e:
             console.print(f"[red]Prefilter failed for {sid[:8]}: {e}[/red]")
             return sid, None
 
-    tasks = [_one(s) for s in pending]
-    for coro in asyncio.as_completed(tasks):
-        sid, fr = await coro
-        results[sid] = fr
-    await client.close()
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_one, s) for s in pending]
+        for fut in as_completed(futures):
+            sid, fr = fut.result()
+            results[sid] = fr
     return results
 
 
 def extract_pending(dry_run: bool = False, project_path: str | None = None,
-                    use_batch: bool = False, parallel: int = 1):
+                    use_batch: bool = False, parallel: int = 1,
+                    backend_name: str | None = None):
     """Extract all pending sessions, optionally scoped to one project."""
     init_db()
     db = get_db()
@@ -614,8 +610,13 @@ def extract_pending(dry_run: bool = False, project_path: str | None = None,
         console.print(f"[dim]No pending sessions{scope}.[/dim]")
         return
 
+    backend = None
+    if not dry_run:
+        backend = get_backend(backend_name, config=load_config())
+        use_batch = _validate_batch_flag(use_batch, backend)
+
     scope = f" (project: {project_path})" if project_path else ""
-    flags = []
+    flags = [f"backend={backend.name}"] if backend else []
     if use_batch:
         flags.append("batch")
     if parallel > 1:
@@ -625,11 +626,11 @@ def extract_pending(dry_run: bool = False, project_path: str | None = None,
         f"[bold]Processing {len(pending)} pending session(s){scope}{flag_str}...[/bold]"
     )
 
-    # Optional: async-parallel prefilter across sessions
+    # Optional: thread-parallel prefilter across sessions
     prefiltered: dict[str, dict] = {}
     if parallel > 1 and not dry_run:
-        console.print(f"[blue]Prefilter: parallel Haiku across {len(pending)} sessions[/blue]")
-        prefiltered = asyncio.run(_prefilter_sessions_async(pending))
+        console.print(f"[blue]Prefilter: parallel filter across {len(pending)} sessions[/blue]")
+        prefiltered = _prefilter_sessions(pending, backend, workers=parallel)
 
     total_extracted = 0
     for session in pending:
@@ -637,13 +638,15 @@ def extract_pending(dry_run: bool = False, project_path: str | None = None,
         try:
             if session["id"] in prefiltered and prefiltered[session["id"]] is not None:
                 results = _extract_with_prefilter(
-                    session, prefiltered[session["id"]], use_batch=use_batch)
+                    session, prefiltered[session["id"]], backend,
+                    use_batch=use_batch)
             else:
                 results = extract_session(
                     session["transcript_path"],
                     session["id"],
                     dry_run=dry_run,
                     use_batch=use_batch,
+                    backend=backend,
                 )
             total_extracted += len(results)
         except Exception as e:
@@ -651,22 +654,29 @@ def extract_pending(dry_run: bool = False, project_path: str | None = None,
             # Guard already marked it extracted in the finally block.
             continue
 
+    # Mirror new/updated knowledge into the Obsidian vault, if configured.
+    if not dry_run:
+        try:
+            from serve.vault import export_vault
+            export_vault(quiet=True)
+        except Exception as e:
+            console.print(f"[dim]vault export skipped: {e}[/dim]")
+
     console.print(
         f"\n[bold green]Done. Extracted {total_extracted} knowledge item(s).[/bold green]"
     )
 
 
 def _extract_with_prefilter(session: dict, filter_result: dict,
-                            use_batch: bool) -> list[dict]:
+                            backend: LLMBackend, use_batch: bool) -> list[dict]:
     """Finish extraction using a pre-computed filter result.
 
-    Skips re-running Haiku. Still runs structure + dedup + save under
+    Skips re-running the filter. Still runs structure + dedup + save under
     the try/finally guard.
     """
     session_id = session["id"]
     init_db()
     db = get_db()
-    client = anthropic.Anthropic()
     extracted: list[dict] = []
     try:
         if "_skip" in filter_result:
@@ -675,17 +685,7 @@ def _extract_with_prefilter(session: dict, filter_result: dict,
         if session_data is None:
             session_data = parse_session(session["transcript_path"])
 
-        haiku_usage = filter_result.get("_usage", {})
-        haiku_cost = _estimate_cost("haiku", haiku_usage)
-        log_extraction_cost(
-            db, session_id, "filter", "haiku",
-            haiku_usage.get("input_tokens", 0),
-            haiku_usage.get("output_tokens", 0),
-            haiku_cost,
-            cache_read_input_tokens=haiku_usage.get("cache_read_input_tokens", 0),
-            cache_creation_input_tokens=haiku_usage.get("cache_creation_input_tokens", 0),
-        )
-        _log_cache_stats("filter", haiku_usage)
+        _log_stage_cost(db, session_id, "filter", filter_result)
 
         if not filter_result.get("has_knowledge"):
             return []
@@ -696,46 +696,14 @@ def _extract_with_prefilter(session: dict, filter_result: dict,
         existing = get_all_knowledge(db)
         if use_batch and len(candidates) > 0:
             extracted = _structure_and_save_batch(
-                db, client, session_id, session_data, candidates, existing)
+                db, backend, session_id, session_data, candidates, existing)
         else:
             extracted = _structure_and_save_sync(
-                db, client, session_id, session_data, candidates, existing)
+                db, backend, session_id, session_data, candidates, existing)
         return extracted
     finally:
         mark_session_extracted(db, session_id)
         db.close()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Cost estimation
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _estimate_cost(model: str, usage: dict, is_batch: bool = False) -> float:
-    """Estimate API cost in USD including cache discounts.
-
-    Cache reads: 10% of base input price.
-    Cache writes (ephemeral, 5-min TTL): 125% of base input price.
-    Batch: 50% off everything (applied here when is_batch=True).
-    """
-    inp = usage.get("input_tokens", 0)
-    out = usage.get("output_tokens", 0)
-    cache_read = usage.get("cache_read_input_tokens", 0)
-    cache_write = usage.get("cache_creation_input_tokens", 0)
-
-    if "haiku" in model:
-        in_price, out_price = 0.25, 1.25
-    elif "sonnet" in model:
-        in_price, out_price = 3.0, 15.0
-    else:
-        in_price, out_price = 15.0, 75.0
-
-    base = (inp * in_price + out * out_price) / 1_000_000
-    cache_bonus = (cache_read * in_price * 0.1
-                   + cache_write * in_price * 0.25) / 1_000_000
-    total = base + cache_bonus
-    if is_batch:
-        total *= 0.5
-    return total
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -749,11 +717,14 @@ def main():
     parser.add_argument("--session", help="Extract specific session by path")
     parser.add_argument("--session-id", help="Session ID (used with --session)")
     parser.add_argument("--dry-run", action="store_true", help="Skip LLM calls")
+    parser.add_argument("--backend", choices=["claude-cli", "codex-cli", "api"],
+                        help="LLM backend (default: config extraction.backend, "
+                             "then claude-cli — zero API cost)")
     parser.add_argument("--batch", action="store_true",
-                        help="Use Message Batches API for Sonnet structuring "
-                             "(~50%% cheaper, async — may take minutes to hours)")
+                        help="Use Message Batches API for structuring "
+                             "(api backend only; ~50%% cheaper, async)")
     parser.add_argument("--parallel", type=int, default=1,
-                        help="Parallel Haiku filter across N sessions (api backend only)")
+                        help="Parallel filter stage across N sessions")
     parser.add_argument(
         "--project", "-p",
         help="Only extract sessions belonging to this project path "
@@ -764,8 +735,17 @@ def main():
 
     if args.session:
         sid = args.session_id or Path(args.session).stem
+        backend = None
+        if not args.dry_run:
+            backend = get_backend(args.backend, config=load_config())
         extract_session(args.session, sid, dry_run=args.dry_run,
-                        use_batch=args.batch)
+                        use_batch=args.batch, backend=backend)
+        if not args.dry_run:
+            try:
+                from serve.vault import export_vault
+                export_vault(quiet=True)
+            except Exception as e:
+                console.print(f"[dim]vault export skipped: {e}[/dim]")
         return
 
     if args.project and args.project.lower() == "all":
@@ -773,7 +753,8 @@ def main():
     else:
         project_path = args.project or str(Path.cwd())
     extract_pending(dry_run=args.dry_run, project_path=project_path,
-                    use_batch=args.batch, parallel=args.parallel)
+                    use_batch=args.batch, parallel=args.parallel,
+                    backend_name=args.backend)
 
 
 if __name__ == "__main__":
