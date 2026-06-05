@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] — 2026-06-05
 
 ### Added
 - **Pluggable LLM backends** (`extraction.backend` / `--backend`):
@@ -41,7 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `anthropic` is imported lazily — CLI-backend users don't need the package
   configured.
 
-### Previous unreleased entries
+### Added (carried from pre-0.2.0 unreleased work)
 - `mojo dashboard-export` — bundles the dashboard into a single read-only HTML file
   with an embedded snapshot, so knowledge views can be shared without a backend.
 - `mojo extract --project <path>` / `-p` — scope extraction to one project. Defaults
@@ -63,8 +63,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `MOJO_LLM_BACKEND=claude-code` headless backend. It routed LLM calls
   through `claude -p`, whose billing source (API key vs. subscription) was not
   something the user could reliably predict from the subprocess environment.
-  Use `ANTHROPIC_API_KEY` with the default backend, which has transparent
-  per-call cost tracking in `extraction_costs`.
+  (0.2.0 reintroduces headless `claude -p` as the `claude-cli` backend with
+  that ambiguity resolved — the API key is stripped from the child env.)
 
 ## [0.1.0] — 2026-04-13
 
@@ -81,5 +81,5 @@ Initial alpha.
 - SQLite-backed storage at `~/.mojo/mojo.db` (override with `MOJO_HOME`).
 - Seed import from JSON (`mojo import-seed`).
 
-[Unreleased]: https://github.com/codespermuted/mojo/compare/v0.1.0...HEAD
+[0.2.0]: https://github.com/codespermuted/mojo/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/codespermuted/mojo/releases/tag/v0.1.0
