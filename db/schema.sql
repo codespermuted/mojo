@@ -55,6 +55,22 @@ CREATE TABLE IF NOT EXISTS knowledge (
     FOREIGN KEY (parent_id) REFERENCES knowledge(id)
 );
 
+-- Claim vs. evidence separation: a knowledge row is one claim; each
+-- observation records where (project/session) it was seen to hold or
+-- fail. Supporting observations from >= 2 distinct projects are the
+-- evidence that justifies generalizing the claim's scope; a refuting
+-- observation sharpens does_not_apply_when instead of killing the claim.
+CREATE TABLE IF NOT EXISTS observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    knowledge_id TEXT NOT NULL,
+    project_path TEXT DEFAULT '',
+    session_id TEXT DEFAULT '',
+    stance TEXT NOT NULL DEFAULT 'supports' CHECK(stance IN ('supports', 'refutes')),
+    note TEXT DEFAULT '',
+    observed_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (knowledge_id) REFERENCES knowledge(id)
+);
+
 CREATE TABLE IF NOT EXISTS injections (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     knowledge_id TEXT NOT NULL,
@@ -104,6 +120,7 @@ CREATE TABLE IF NOT EXISTS companion_interventions (
 );
 
 -- Indexes
+CREATE INDEX IF NOT EXISTS idx_observations_knowledge ON observations(knowledge_id);
 CREATE INDEX IF NOT EXISTS idx_knowledge_domain ON knowledge(domain);
 CREATE INDEX IF NOT EXISTS idx_knowledge_type ON knowledge(type);
 CREATE INDEX IF NOT EXISTS idx_knowledge_confidence ON knowledge(confidence DESC);

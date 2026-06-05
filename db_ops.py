@@ -370,6 +370,7 @@ def init_db(db_path: Optional[Path] = None):
         ("conflicts_with",    "TEXT DEFAULT '[]'"),
         ("review_required",   "INTEGER DEFAULT 1"),
         ("safe_to_generalize", "INTEGER DEFAULT 0"),
+        ("generalization_suggested", "INTEGER DEFAULT 0"),
     ]
     status_added = False
     for col, ddl in migrations:
@@ -607,6 +608,72 @@ def mark_session_extracted(db: sqlite3.Connection, session_id: str):
     """Mark a session as extracted."""
     db.execute(
         "UPDATE raw_sessions SET extracted = 1 WHERE id = ?", (session_id,)
+    )
+    db.commit()
+
+
+def record_observation(db: sqlite3.Connection, knowledge_id: str,
+                       project_path: str = "", session_id: str = "",
+                       stance: str = "supports", note: str = "") -> None:
+    """Record that a claim was observed to hold (or fail) somewhere.
+
+    This is the accumulation side of the claim/evidence split: a knowledge
+    row is one claim, observations are where it was seen. After recording,
+    re-evaluate whether cross-project evidence justifies suggesting
+    generalization (suggestion only — promotion stays a human decision).
+    """
+    if stance not in {"supports", "refutes"}:
+        raise ValueError(f"Invalid stance: {stance}")
+    db.execute("""
+        INSERT INTO observations (knowledge_id, project_path, session_id, stance, note)
+        VALUES (?, ?, ?, ?, ?)
+    """, (knowledge_id, project_path or "", session_id or "", stance, note or ""))
+    db.commit()
+    _reevaluate_generalization(db, knowledge_id)
+
+
+def get_observations(db: sqlite3.Connection, knowledge_id: str) -> list[dict]:
+    """All observations for a claim, oldest first."""
+    rows = db.execute(
+        "SELECT * FROM observations WHERE knowledge_id = ? ORDER BY observed_at",
+        (knowledge_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def observation_summary(db: sqlite3.Connection, knowledge_id: str) -> dict:
+    """Distinct supporting/refuting projects for a claim."""
+    rows = db.execute(
+        "SELECT stance, project_path FROM observations WHERE knowledge_id = ?",
+        (knowledge_id,),
+    ).fetchall()
+    supporting = {r["project_path"] for r in rows
+                  if r["stance"] == "supports" and r["project_path"]}
+    refuting = {r["project_path"] for r in rows
+                if r["stance"] == "refutes" and r["project_path"]}
+    return {
+        "supporting_projects": sorted(supporting),
+        "refuting_projects": sorted(refuting),
+        "total": len(rows),
+    }
+
+
+def _reevaluate_generalization(db: sqlite3.Connection, knowledge_id: str) -> None:
+    """Flag a claim for generalization review when evidence supports it.
+
+    Criterion: independently observed to hold in >= 2 distinct projects,
+    with no refuting observation. The flag only *suggests* — scope and
+    promotion_state still change through explicit review, never here.
+    A refutation clears the suggestion: the claim's boundary needs
+    sharpening (does_not_apply_when), not a wider scope.
+    """
+    summary = observation_summary(db, knowledge_id)
+    suggest = (len(summary["supporting_projects"]) >= 2
+               and not summary["refuting_projects"])
+    db.execute(
+        "UPDATE knowledge SET generalization_suggested = ?, updated_at = ? "
+        "WHERE id = ?",
+        (int(suggest), datetime.now().isoformat(), knowledge_id),
     )
     db.commit()
 
