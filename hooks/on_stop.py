@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _resolve import resolve_mojo_db
+from _resolve import is_extraction_context, resolve_mojo_db
 
 # Quick regex-free keyword scan for speed
 CORRECTION_KEYWORDS = [
@@ -28,6 +28,9 @@ CORRECTION_KEYWORDS = [
 
 
 def main():
+    if is_extraction_context():
+        return  # fired by our own headless extraction — ignore
+
     try:
         hook_data = json.loads(sys.stdin.read())
     except (json.JSONDecodeError, EOFError):

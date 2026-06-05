@@ -22,8 +22,38 @@ unnecessary.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Optional
+
+# Set by extract/llm_backend.py in every CLI child process. A headless
+# `claude -p` spawned by the extraction pipeline fires these same hooks;
+# without this guard an extraction would register itself as a session and
+# trigger another extraction, recursively.
+EXTRACTION_ENV_FLAG = "MOJO_EXTRACTION"
+
+
+def is_extraction_context() -> bool:
+    """True when this hook fired inside a Mojo extraction subprocess."""
+    return bool(os.environ.get(EXTRACTION_ENV_FLAG))
+
+
+def auto_extract_enabled(mojo_home: Path) -> bool:
+    """Read extraction.auto_extract from config.yaml without PyYAML.
+
+    Hooks run under system python3 with no package environment, so this
+    is a deliberately dumb regex read. Defaults to True (matching the
+    packaged default config) when the file or key is missing.
+    """
+    config_path = mojo_home / "config.yaml"
+    try:
+        text = config_path.read_text(encoding="utf-8")
+    except OSError:
+        return True
+    m = re.search(r"^\s*auto_extract:\s*(\S+)", text, re.MULTILINE)
+    if not m:
+        return True
+    return m.group(1).strip().lower() not in ("false", "no", "0", "off")
 
 
 def resolve_mojo_db(cwd: Optional[str]) -> Optional[Path]:
