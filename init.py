@@ -112,13 +112,14 @@ def init_mojo(skip_hooks: bool = False):
     console.print(Panel.fit(
         "[bold green]Mojo initialized![/bold green]\n\n"
         "Next steps:\n"
-        "  1. Attach a project:       [cyan]mojo attach --project /path/to/project[/cyan]\n"
-        "  2. Seed a project (free):  [cyan]mojo scan git /path/to/project[/cyan]\n"
-        "  3. Generate MOJO.md:       [cyan]mojo refresh --project /path/to/project[/cyan]\n"
-        "  4. Review / approve items: [cyan]mojo review[/cyan]\n"
-        "  5. Open the dashboard:     [cyan]mojo dashboard[/cyan]\n\n"
+        "  1. Backfill past sessions:  [cyan]mojo scan sessions --project /path/to/project[/cyan]\n"
+        "  2. Extract (claude -p, $0): [cyan]mojo extract --project /path/to/project[/cyan]\n"
+        "  3. Create Obsidian vault:   [cyan]mojo vault init[/cyan]\n"
+        "  4. Review in Obsidian, then apply: [cyan]mojo vault sync[/cyan]\n"
+        "  5. Generate MOJO.md:        [cyan]mojo refresh --project /path/to/project[/cyan]\n\n"
         "Mojo generates advisory context by default and does not auto-edit AGENTS.md or CLAUDE.md.\n"
-        "Hooks run automatically on the next Claude Code session — no further setup needed.",
+        "Hooks run automatically on the next Claude Code session — new sessions are\n"
+        "auto-extracted in the background (extraction.auto_extract).",
         border_style="green"
     ))
 

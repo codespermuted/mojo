@@ -60,6 +60,9 @@ FLAT_MODULES=(
     init.py
     import_seed.py
     mojo_cli.py
+    mojo_config.py
+    advisory.py
+    companion.py
 )
 
 echo "[dev-install] symlinking flat modules in $SITE_PKG → $REPO_ROOT"
