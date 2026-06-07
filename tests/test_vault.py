@@ -65,13 +65,19 @@ def test_export_writes_note_with_frontmatter(env):
     note = _note_path(env["vault"], "smp-001")
     assert "electricity" in str(note)  # domain → folder hierarchy
     meta = _frontmatter(note)
+    # frontmatter holds ONLY human-editable fields
     assert meta["id"] == "smp-001"
     assert meta["scope"] == "project"
-    assert meta["grade"] in "ABCDF"
     assert meta["tags"] == ["smp", "kst"]
+    # machine fields are NOT in frontmatter (simple/intuitive reading view)
+    assert "grade" not in meta
+    assert "usage_count" not in meta
     body = note.read_text(encoding="utf-8")
     assert "## Observations" in body
     assert "proj-a" in body
+    # machine metadata lives in the auto footer instead
+    assert "## Metadata (auto" in body
+    assert "grade:" in body
     # review queue generated at vault root
     assert (env["vault"] / "REVIEW-QUEUE.md").exists()
 
@@ -140,6 +146,73 @@ def test_title_edit_renames_file(env):
 
     renamed = _note_path(env["vault"], "smp-001")
     assert "SMP는 KST 고정" in renamed.name
+
+
+def test_tags_string_is_rejected_not_shredded(env):
+    """A bare 'tags: foo' (string, not list) must not become ['f','o','o']."""
+    _seed(env["db_path"])
+    export_vault(quiet=True)
+    note = _note_path(env["vault"], "smp-001")
+    text = note.read_text(encoding="utf-8")
+    # replace the YAML list block with a bare string
+    text = text.replace("tags:\n- smp\n- kst", "tags: shredme")
+    note.write_text(text, encoding="utf-8")
+
+    import_vault_edits(quiet=True)
+    db = get_db(env["db_path"])
+    import json as _json
+    row = db.execute("SELECT tags FROM knowledge WHERE id='smp-001'").fetchone()
+    db.close()
+    tags = _json.loads(row["tags"])
+    assert tags == ["smp", "kst"]  # unchanged, not shredded
+
+
+def test_clearing_why_clears_reasoning(env):
+    _seed(env["db_path"])
+    export_vault(quiet=True)
+    note = _note_path(env["vault"], "smp-001")
+    text = note.read_text(encoding="utf-8")
+    # blank out the body of the ## Why section (keep heading)
+    text = text.replace("Market operator publishes in KST.", "")
+    note.write_text(text, encoding="utf-8")
+
+    import_vault_edits(quiet=True)
+    db = get_db(env["db_path"])
+    row = db.execute("SELECT reasoning FROM knowledge WHERE id='smp-001'").fetchone()
+    db.close()
+    assert (row["reasoning"] or "").strip() == ""
+
+
+def test_knowledge_domain_avoids_double_nesting(env):
+    """A domain named 'knowledge/management' must not create knowledge/knowledge/."""
+    db = get_db(env["db_path"])
+    save_knowledge(db, {
+        "id": "km-9", "type": "code_pattern", "domain": "knowledge/management",
+        "title": "Meta note", "content": "x", "confidence": 0.6,
+    })
+    db.close()
+    export_vault(quiet=True)
+    matches = list((env["vault"] / "knowledge").rglob("km-9 *.md"))
+    assert len(matches) == 1
+    assert "knowledge/knowledge" not in str(matches[0])
+    assert str(matches[0]).endswith("knowledge/management/km-9 Meta note.md")
+
+
+def test_review_queue_links_use_exact_filename(env):
+    """Queue wikilinks must target the exact note filename (resolvable)."""
+    db = get_db(env["db_path"])
+    save_knowledge(db, {
+        "id": "lng-1", "type": "domain_rule", "domain": "ml/x",
+        "title": "A very long title that exceeds the slug truncation boundary by a lot indeed",
+        "content": "y", "confidence": 0.6, "promotion_state": "candidate",
+        "review_required": 1,
+    })
+    db.close()
+    export_vault(quiet=True)
+    note = _note_path(env["vault"], "lng-1")
+    stem = note.stem  # exact filename without .md
+    queue = (env["vault"] / "REVIEW-QUEUE.md").read_text(encoding="utf-8")
+    assert f"[[{stem}|" in queue  # exact target + alias
 
 
 def test_review_queue_lists_generalization_candidates(env):

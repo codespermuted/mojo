@@ -79,6 +79,26 @@ def test_claude_format_still_parses(tmp_path):
     assert data["turn_count"] == 2
 
 
+def test_parse_json_payload_first_balanced_object():
+    from extract.pipeline import _parse_json_payload
+    # prose-wrapped single object
+    assert _parse_json_payload('Here you go: {"a": 1}')["a"] == 1
+    # two objects separated by prose — must return the FIRST, not span both
+    assert _parse_json_payload('{"a": 1} and also {"b": 2}')["a"] == 1
+    # braces inside strings must not confuse the balance counter
+    assert _parse_json_payload('{"k": "has } brace"}')["k"] == "has } brace"
+    # fenced
+    assert _parse_json_payload('```json\n{"a": 2}\n```')["a"] == 2
+
+
+def test_ensure_unique_id_avoids_collision():
+    from extract.pipeline import _ensure_unique_id
+    existing = [{"id": "smp-001"}, {"id": "smp-001-b2"}]
+    assert _ensure_unique_id("smp-002", existing) == "smp-002"   # free
+    assert _ensure_unique_id("smp-001", existing) == "smp-001-b3"  # collides → next free
+    assert _ensure_unique_id("", existing) == "item-b2"
+
+
 def test_tool_only_turns_excluded_from_conversation_text():
     from extract.parser import turns_to_conversation_text
 

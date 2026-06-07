@@ -23,6 +23,7 @@ web dashboard as the review UI.
 from __future__ import annotations
 
 import json
+import glob
 import re
 import sys
 from collections import defaultdict
@@ -81,20 +82,37 @@ def _slugify(title: str, max_len: int = 60) -> str:
     return slug[:max_len].strip() or "untitled"
 
 
+def _domain_parts(domain: str) -> list[str]:
+    """Domain → folder segments, kept simple and intuitive.
+
+    Drop a leading segment that equals the vault's knowledge dir name, so a
+    domain like "knowledge/management" maps to knowledge/management/ rather
+    than the confusing knowledge/knowledge/management/.
+    """
+    parts = [p for p in (domain or "misc").split("/") if p]
+    if parts and parts[0].lower() == KNOWLEDGE_DIR:
+        parts = parts[1:]
+    return parts or ["misc"]
+
+
 def _item_file(vault: Path, item: dict) -> Path:
     domain_dir = vault / KNOWLEDGE_DIR
-    for part in (item.get("domain") or "misc").split("/"):
-        part = _slugify(part, 40)
-        domain_dir = domain_dir / part
+    for part in _domain_parts(item.get("domain") or "misc"):
+        domain_dir = domain_dir / _slugify(part, 40)
     return domain_dir / f"{item['id']} {_slugify(item.get('title', ''))}.md"
 
 
 def _find_existing(vault: Path, item_id: str) -> Path | None:
-    """Locate an item's file anywhere under knowledge/ (domain may change)."""
+    """Locate an item's file anywhere under knowledge/ (domain may change).
+
+    ``glob.escape`` keeps ids with glob metacharacters literal, and the
+    results are sorted so a (corruption-induced) duplicate resolves
+    deterministically instead of whichever the filesystem yields first.
+    """
     root = vault / KNOWLEDGE_DIR
     if not root.exists():
         return None
-    matches = list(root.rglob(f"{item_id} *.md"))
+    matches = sorted(root.rglob(f"{glob.escape(item_id)} *.md"))
     return matches[0] if matches else None
 
 
@@ -102,9 +120,31 @@ def _find_existing(vault: Path, item_id: str) -> Path | None:
 # Render (DB → md)
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _clean_excerpt(excerpt: str, limit: int = 1500) -> str:
+    """Drop tool-instrumentation noise from a transcript excerpt.
+
+    Old extractions captured lines like ``[CLAUDE]:`` with an empty body
+    and ``[Tools used: Edit]`` that carry no evidence. Keep only lines with
+    real prose so the excerpt reads as evidence, not a tool log.
+    """
+    kept = []
+    for ln in excerpt.splitlines():
+        s = ln.strip()
+        if not s:
+            continue
+        if s in ("[CLAUDE]:", "[USER]:"):
+            continue
+        if s.startswith("[Tools used:") and s.endswith("]"):
+            continue
+        kept.append(ln)
+    return "\n".join(kept)[:limit]
+
+
 def render_item(item: dict, observations: list[dict],
                 filename_by_id: dict[str, str]) -> str:
-    grade = evidence_based_grade(item)
+    # Frontmatter holds ONLY human-editable fields — editing them IS the
+    # review. Machine fields go in a footer so the note opens on the claim,
+    # not a wall of metadata (theme: simple, intuitive).
     meta: dict = {"id": item["id"]}
     for field in EDITABLE_FIELDS:
         value = item.get(field)
@@ -115,14 +155,6 @@ def render_item(item: dict, observations: list[dict],
         if field == "tags":
             value = list(value or [])
         meta[field] = value if value is not None else ""
-    # Machine fields (regenerated; edits here are overwritten)
-    meta["grade"] = grade
-    meta["tier"] = knowledge_tier(item)
-    meta["generalization_suggested"] = bool(item.get("generalization_suggested"))
-    meta["project"] = item.get("project_path") or ""
-    meta["usage_count"] = item.get("usage_count", 0)
-    meta["created"] = item.get("created_at") or ""
-    meta["updated"] = item.get("updated_at") or ""
 
     fm = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True,
                         default_flow_style=False, width=88).strip()
@@ -166,21 +198,44 @@ def render_item(item: dict, observations: list[dict],
             lines += [f"- {link}" + (f" — {why}" if why else "")]
         lines += [""]
 
-    excerpt = (item.get("evidence_excerpt") or "").strip()
+    excerpt = _clean_excerpt((item.get("evidence_excerpt") or "").strip())
     if excerpt:
-        quoted = "\n".join(f"> {ln}" for ln in excerpt[:1500].splitlines())
+        quoted = "\n".join(f"> {ln}" for ln in excerpt.splitlines())
         lines += ["## Evidence excerpt", "", quoted, ""]
 
+    # Machine-owned footer — regenerated every export; edits here are lost.
     lineage = item.get("source_lineage") or {}
+    proj = item.get("project_path") or "—"
+    lines += [
+        "## Metadata (auto — do not edit)", "",
+        f"- grade: **{evidence_based_grade(item)}** · tier: {knowledge_tier(item)}"
+        f" · generalization_suggested: {bool(item.get('generalization_suggested'))}",
+        f"- project: `{proj}` · usage: {item.get('usage_count', 0)}",
+        f"- created: {item.get('created_at') or '—'} · updated: {item.get('updated_at') or '—'}",
+    ]
     if lineage:
-        lines += ["## Source", "",
-                  f"`{json.dumps(lineage, ensure_ascii=False)}`", ""]
+        lines += [f"- source: `{json.dumps(lineage, ensure_ascii=False)}`"]
+    lines += [""]
 
     return "\n".join(lines).rstrip() + "\n"
 
 
-def render_review_queue(items: list[dict]) -> str:
+def _queue_link(it: dict, filename_by_id: dict[str, str]) -> str:
+    """An Obsidian link whose target is the EXACT filename (so it resolves),
+    with a short alias for readability: [[full filename|id short-title]]."""
+    target = filename_by_id.get(it["id"], f"{it['id']} {it.get('title', '')}")
+    title = (it.get("title") or "").strip()
+    short = title if len(title) <= 45 else title[:44].rstrip() + "…"
+    alias = f"{it['id']} {short}".strip()
+    return f"[[{target}|{alias}]]"
+
+
+def render_review_queue(items: list[dict],
+                        filename_by_id: dict[str, str] | None = None) -> str:
     """REVIEW-QUEUE.md — the human review inbox, replaces the dashboard."""
+    filename_by_id = filename_by_id or {
+        it["id"]: f"{it['id']} {_slugify(it.get('title', ''))}" for it in items
+    }
     pending = [it for it in items
                if it.get("review_required") and not it.get("archived")
                and it.get("promotion_state") in ("raw", "candidate")]
@@ -202,20 +257,25 @@ def render_review_queue(items: list[dict]) -> str:
         "",
     ]
     for it in generalize:
-        lines.append(f"- [[{_slugify(it['id'] + ' ' + it.get('title', ''))}]]"
-                     f" — scope: {it.get('scope')}")
+        lines.append(f"- {_queue_link(it, filename_by_id)} — scope: {it.get('scope')}")
     if not generalize:
         lines.append("(없음)")
     lines += ["", f"## 검토 대기 ({len(pending)})", ""]
+    # Highest confidence first within each domain — review the strongest
+    # signals first (theme: intuitive, scannable).
     by_domain: dict[str, list] = defaultdict(list)
     for it in pending:
         by_domain[it.get("domain") or "misc"].append(it)
     for domain in sorted(by_domain):
         lines.append(f"### {domain}")
-        for it in by_domain[domain]:
+        rows = sorted(by_domain[domain],
+                      key=lambda it: it.get("confidence") or 0.0, reverse=True)
+        for it in rows:
             grade = evidence_based_grade(it)
+            conf = it.get("confidence")
+            conf_str = f"{conf:.2f}" if isinstance(conf, (int, float)) else "?"
             lines.append(
-                f"- [{grade}] [[{_slugify(it['id'] + ' ' + it.get('title', ''))}]]"
+                f"- `{grade} {conf_str}` {_queue_link(it, filename_by_id)}"
             )
         lines.append("")
     if not pending:
@@ -256,16 +316,45 @@ def export_vault(quiet: bool = False) -> int:
                 target.write_text(content, encoding="utf-8")
                 written += 1
 
+        # Prune orphans: notes whose id no longer exists in the DB (item
+        # deleted/archived-out). Guard: never prune when the DB returned no
+        # items — a failed read must not wipe the vault.
+        pruned = 0
+        if items:
+            pruned = _prune_orphans(vault, {it["id"] for it in items})
+
         vault.mkdir(parents=True, exist_ok=True)
         (vault / REVIEW_QUEUE_FILE).write_text(
-            render_review_queue(items), encoding="utf-8")
+            render_review_queue(items, filename_by_id), encoding="utf-8")
     finally:
         db.close()
 
     if not quiet:
-        console.print(f"[green]✓ Vault export: {written} file(s) updated "
+        extra = f", {pruned} pruned" if pruned else ""
+        console.print(f"[green]✓ Vault export: {written} file(s) updated{extra} "
                       f"→ {vault}[/green]")
     return written
+
+
+_NOTE_ID_RE = re.compile(r"^(\S+) .+\.md$")
+
+
+def _prune_orphans(vault: Path, live_ids: set[str]) -> int:
+    """Delete knowledge notes whose id is not in ``live_ids``. Returns count."""
+    root = vault / KNOWLEDGE_DIR
+    if not root.exists():
+        return 0
+    pruned = 0
+    for path in root.rglob("*.md"):
+        m = _NOTE_ID_RE.match(path.name)
+        if m and m.group(1) not in live_ids:
+            path.unlink()
+            pruned += 1
+    # tidy up now-empty domain folders
+    for d in sorted(root.rglob("*"), reverse=True):
+        if d.is_dir() and not any(d.iterdir()):
+            d.rmdir()
+    return pruned
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -360,7 +449,17 @@ def import_vault_edits(quiet: bool = False) -> int:
                     new_val = int(bool(new_val))
                     cur_val = int(bool(current.get(field)))
                 elif field == "tags":
-                    new_val = list(new_val or [])
+                    # Must be a YAML list. A bare string ("tags: foo") would
+                    # become ['f','o','o'] under list() — reject it instead
+                    # of silently shredding the field into characters.
+                    if new_val in (None, ""):
+                        new_val = []
+                    elif not isinstance(new_val, list):
+                        if not quiet:
+                            console.print(
+                                f"[yellow]{path.name}: tags must be a YAML list, "
+                                f"got {type(new_val).__name__} — ignored[/yellow]")
+                        continue
                     cur_val = list(current.get(field) or [])
                 elif field == "confidence":
                     if not _validate(field, new_val):
@@ -379,13 +478,19 @@ def import_vault_edits(quiet: bool = False) -> int:
                 if new_val != cur_val:
                     updates[field] = new_val
 
-            # Body sections: content (text before first ##) and ## Why
-            body_content = sections.get("_content", "").strip()
-            if body_content and body_content != (current.get("content") or "").strip():
-                updates["content"] = body_content
-            body_why = sections.get("Why", "").strip()
-            if body_why and body_why != (current.get("reasoning") or "").strip():
-                updates["reasoning"] = body_why
+            # Body sections: content (text before first ##) and ## Why.
+            # content must stay non-empty (a claim with no content is
+            # meaningless — an empty body is almost always a parse artifact,
+            # so we refuse to wipe it). reasoning is optional and MAY be
+            # cleared, so an empty ## Why is recorded.
+            if "_content" in sections:
+                body_content = sections["_content"].strip()
+                if body_content and body_content != (current.get("content") or "").strip():
+                    updates["content"] = body_content
+            if "Why" in sections:
+                body_why = sections["Why"].strip()
+                if body_why != (current.get("reasoning") or "").strip():
+                    updates["reasoning"] = body_why
 
             if not updates:
                 continue
