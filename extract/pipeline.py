@@ -108,19 +108,55 @@ def split_prompt(name: str) -> tuple[str, str]:
 
 
 def _parse_json_payload(text: str) -> dict:
-    """Strip markdown fences and parse JSON from a model response."""
+    """Strip markdown fences and parse JSON from a model response.
+
+    CLI backends sometimes wrap the JSON in prose. The fallback walks the
+    string with a brace-depth counter and returns the FIRST balanced
+    top-level object — `text.find('{')..text.rfind('}')` would span two
+    objects separated by prose ("{...} and {...}") and yield invalid JSON.
+    """
     text = text.strip()
     if text.startswith("```"):
         text = text.split("\n", 1)[1].rsplit("```", 1)[0]
-    # CLI backends sometimes wrap JSON in prose; recover the outermost
-    # object if direct parsing fails.
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        start, end = text.find("{"), text.rfind("}")
-        if start != -1 and end > start:
-            return json.loads(text[start:end + 1])
-        raise
+        pass
+
+    obj = _first_balanced_object(text)
+    if obj is None:
+        raise json.JSONDecodeError("no JSON object found", text, 0)
+    return json.loads(obj)
+
+
+def _first_balanced_object(text: str) -> Optional[str]:
+    """Return the first brace-balanced {...} substring, ignoring braces in
+    strings. Returns None if no balanced object exists."""
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_str = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -484,7 +520,16 @@ def _finalize_knowledge(db, backend, session_id, knowledge, existing, extracted,
         )
         return
 
-    related_pairs = find_related(knowledge["content"], existing)
+    # Not a content duplicate, but the LLM-generated id may still collide
+    # with a *different* existing claim (it picks ids like "smp-004" by
+    # scanning a truncated list and can repeat one). Saving over it with
+    # INSERT OR REPLACE would clobber the older claim and, worse, make
+    # find_related match the colliding id and produce a self-link. Mint a
+    # fresh unique id instead so both claims survive.
+    knowledge["id"] = _ensure_unique_id(knowledge.get("id", ""), existing)
+
+    related_pairs = find_related(knowledge["content"], existing,
+                                 exclude_id=knowledge["id"])
     knowledge["related_ids"] = [rid for rid, _ in related_pairs]
     knowledge["related_scores"] = {rid: score for rid, score in related_pairs}
     if related_pairs:
@@ -539,6 +584,23 @@ def _finalize_knowledge(db, backend, session_id, knowledge, existing, extracted,
         f"[green]✓ Extracted: {knowledge['title']} "
         f"(confidence={knowledge.get('confidence', '?')})[/green]"
     )
+
+
+def _ensure_unique_id(candidate_id: str, existing: list[dict]) -> str:
+    """Return candidate_id, or a `-bN` suffixed variant if it collides.
+
+    The structurer prompt asks for a non-colliding id but cannot see the
+    full store, so collisions happen. This guarantees uniqueness within the
+    set the pipeline knows about (db rows loaded into `existing`).
+    """
+    taken = {it["id"] for it in existing}
+    if candidate_id and candidate_id not in taken:
+        return candidate_id
+    base = candidate_id or "item"
+    n = 2
+    while f"{base}-b{n}" in taken:
+        n += 1
+    return f"{base}-b{n}"
 
 
 def _log_stage_cost(db, session_id: str, stage: str, result: dict) -> None:

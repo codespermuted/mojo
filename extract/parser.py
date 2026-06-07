@@ -180,6 +180,11 @@ def _parse_codex_session(path: Path) -> dict:
         etype = event.get("type", "")
         payload = event.get("payload") or {}
 
+        # A typed event with no payload is malformed — skip it explicitly
+        # rather than silently treating it as an empty message.
+        if etype in _CODEX_EVENT_TYPES and not payload:
+            continue
+
         if etype == "session_meta":
             session_id = payload.get("id") or session_id
             project_path = payload.get("cwd") or project_path

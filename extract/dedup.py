@@ -61,15 +61,24 @@ def find_duplicate(new_content: str, existing_items: list[dict],
 
 def find_related(new_content: str, existing_items: list[dict],
                  top_k: int = 3,
-                 min_similarity: float = 0.3) -> list[tuple[str, float]]:
+                 min_similarity: float = 0.3,
+                 exclude_id: str | None = None) -> list[tuple[str, float]]:
     """Find related knowledge items by content similarity.
 
     Returns list of (id, cosine_similarity) tuples, sorted by score desc.
     The score is kept so downstream consumers can weight edges (e.g.,
     map similarity to stroke width in the graph view).
+
+    ``exclude_id`` drops that id from the candidates so an item can never
+    relate to itself (e.g. when its own row is already in the store).
     """
     if not existing_items:
         return []
+
+    if exclude_id is not None:
+        existing_items = [it for it in existing_items if it.get("id") != exclude_id]
+        if not existing_items:
+            return []
 
     contents = [item["content"] for item in existing_items]
     try:
