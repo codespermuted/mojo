@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] — 2026-06-08
+
+Hardening pass after an adversarial multi-agent review of 0.2.0, plus
+vault polish toward a simpler, more intuitive single-user experience.
+
+### Fixed
+- **ID collision / self-link**: an LLM-generated id colliding with an
+  existing claim made `INSERT OR REPLACE` clobber the older claim and
+  caused `find_related` to link an item to itself (observed live:
+  `km-002 → km-002`). Collisions now get a fresh `-bN` id, and
+  `find_related` excludes the item's own id.
+- **JSON recovery**: prose-wrapped responses with two objects
+  (`{…} and {…}`) produced invalid JSON via naïve `find`/`rfind`. Recovery
+  now returns the first brace-balanced object (string-aware).
+- **Self-capture**: the live `SessionEnd`/`Stop` hooks captured Mojo's own
+  development sessions and bare `$HOME` sessions, polluting the store with
+  meta-knowledge. `should_ignore_cwd` now skips both (mirrors the codex
+  backfill repo-skip). Auto-extract log file descriptor is closed (no leak).
+- **scan**: targeted Claude backfill now stores the real project path
+  (consistent with codex + the hook); repo self-skip encoding handles `_`.
+- **vault sync**: `tags:` as a bare string is rejected instead of being
+  shredded into characters; clearing `## Why` now clears `reasoning`;
+  `_find_existing` escapes glob metacharacters and sorts for determinism;
+  `export` prunes orphan notes whose id left the DB (guarded against an
+  empty-DB wipe).
+
+### Changed
+- **Simpler vault notes**: frontmatter holds only human-editable fields;
+  machine fields (grade, tier, usage, timestamps, lineage) moved to a
+  `## Metadata (auto)` footer so a note opens on the claim, not metadata.
+- **REVIEW-QUEUE**: wikilinks target the exact filename with a short alias
+  (were truncated/broken in Obsidian); pending items sort by confidence
+  with a `grade conf` prefix.
+- Domain `knowledge/…` no longer double-nests under `knowledge/knowledge/`.
+- Evidence excerpts strip tool-log noise at render time.
+
 ## [0.2.0] — 2026-06-05
 
 ### Added
@@ -81,5 +117,6 @@ Initial alpha.
 - SQLite-backed storage at `~/.mojo/mojo.db` (override with `MOJO_HOME`).
 - Seed import from JSON (`mojo import-seed`).
 
+[0.2.1]: https://github.com/codespermuted/mojo/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/codespermuted/mojo/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/codespermuted/mojo/releases/tag/v0.1.0
