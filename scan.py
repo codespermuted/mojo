@@ -780,8 +780,10 @@ def _iter_session_dirs(project_path: Optional[str]) -> list[Path]:
         return []
 
     mojo_repo = Path(__file__).resolve().parent
-    mojo_encoded = mojo_repo.name  # fallback; full match below
-    mojo_encoded_full = str(mojo_repo).replace("/", "-")
+    # Match Claude Code's encoding exactly: it replaces both "/" and "_"
+    # with "-" (see _encoded_project_dir). Replacing only "/" would fail
+    # to skip a mojo repo whose path contains an underscore.
+    mojo_encoded_full = str(mojo_repo).replace("/", "-").replace("_", "-")
 
     if project_path is None:
         dirs = [
@@ -887,11 +889,16 @@ def backfill_sessions(max_sessions: int = 50,
                         break
 
                     session_id = jsonl.stem
+                    # Store the real project path when we know it (targeted
+                    # --project), matching what codex backfill and the live
+                    # hook store. Only fall back to the encoded transcript
+                    # dir for --project all, where the real path is unknown.
+                    stored_path = project_path or str(project_dir)
                     db.execute("""
                         INSERT OR IGNORE INTO raw_sessions
                         (id, transcript_path, project_path)
                         VALUES (?, ?, ?)
-                    """, (session_id, str(jsonl), str(project_dir)))
+                    """, (session_id, str(jsonl), stored_path))
                     registered += 1
 
     if source in ("codex", "all"):
