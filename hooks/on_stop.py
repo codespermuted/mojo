@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _resolve import is_extraction_context, resolve_mojo_db
+from _resolve import is_extraction_context, resolve_mojo_db, should_ignore_cwd
 
 # Quick regex-free keyword scan for speed
 CORRECTION_KEYWORDS = [
@@ -42,6 +42,9 @@ def main():
 
     if not session_id or not transcript_path:
         return
+
+    if should_ignore_cwd(cwd):
+        return  # mojo's own repo / bare $HOME — not user project knowledge
 
     mojo_db = resolve_mojo_db(cwd)
     if mojo_db is None:

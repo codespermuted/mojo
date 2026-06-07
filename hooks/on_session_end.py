@@ -32,7 +32,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _resolve import auto_extract_enabled, is_extraction_context, resolve_mojo_db
+from _resolve import (
+    auto_extract_enabled, is_extraction_context, resolve_mojo_db,
+    should_ignore_cwd,
+)
 
 
 def _spawn_auto_extract(mojo_db: Path, session_id: str,
@@ -49,6 +52,7 @@ def _spawn_auto_extract(mojo_db: Path, session_id: str,
 
     mojo_home = mojo_db.parent
     log_dir = mojo_home / "logs"
+    log_file = None
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = (log_dir / "auto-extract.log").open("a")
@@ -68,6 +72,14 @@ def _spawn_auto_extract(mojo_db: Path, session_id: str,
         )
     except (OSError, subprocess.SubprocessError):
         pass  # Silent fail — hooks should never block Claude Code
+    finally:
+        # The child inherited its own dup of the fd; close the parent's
+        # copy so this short-lived hook process doesn't leak it.
+        if log_file is not None:
+            try:
+                log_file.close()
+            except OSError:
+                pass
 
 
 def main():
@@ -85,6 +97,9 @@ def main():
 
     if not session_id or not transcript_path:
         return
+
+    if should_ignore_cwd(cwd):
+        return  # mojo's own repo / bare $HOME — not user project knowledge
 
     mojo_db = resolve_mojo_db(cwd)
     if mojo_db is None:

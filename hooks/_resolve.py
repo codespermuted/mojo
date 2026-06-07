@@ -38,6 +38,31 @@ def is_extraction_context() -> bool:
     return bool(os.environ.get(EXTRACTION_ENV_FLAG))
 
 
+# The mojo source tree (…/hooks/_resolve.py → repo root is two levels up).
+_MOJO_REPO = Path(__file__).resolve().parent.parent
+
+
+def should_ignore_cwd(cwd: Optional[str]) -> bool:
+    """True for sessions that should NOT be captured as user knowledge.
+
+    Skips Mojo's own development sessions (inside the repo) and bare
+    ``$HOME`` sessions — neither is a project whose tacit knowledge the
+    user wants accumulated, and capturing them produces meta-noise about
+    Mojo itself. Mirrors the repo skip already in scan.py's codex backfill.
+    """
+    if not cwd:
+        return True
+    try:
+        cwd_path = Path(cwd).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return False
+    if cwd_path == _MOJO_REPO or _MOJO_REPO in cwd_path.parents:
+        return True
+    if cwd_path == Path.home():
+        return True
+    return False
+
+
 def auto_extract_enabled(mojo_home: Path) -> bool:
     """Read extraction.auto_extract from config.yaml without PyYAML.
 
