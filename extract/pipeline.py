@@ -170,7 +170,10 @@ _RELATION_PROMPT = (
     "that makes them meaningful companions. Do not just say they are "
     "'similar' or 'about the same topic'. No preamble, no quotes, no "
     "trailing period if the sentence ends in a noun. Output only the "
-    "sentence."
+    "sentence.\n"
+    "Write the sentence in natural Korean (한국어), 문어체. Keep technical "
+    "terms, identifiers, and code verbatim in their original form — do not "
+    "translate them."
 )
 
 

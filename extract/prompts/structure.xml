@@ -25,6 +25,7 @@ REQUIREMENTS:
    - suggested_promotion_state: raw | candidate | project_approved | generalized
 9. Always include applies_when and does_not_apply_when. If no exception is known, state the uncertainty instead of pretending there are no limits.
 10. Set human_review_required=true unless the excerpt contains explicit user approval for the exact scope.
+11. LANGUAGE — write the human-readable prose in natural Korean (한국어): the fields `content`, `reasoning`, `applies_when`, `does_not_apply_when`, and `practical_insight`. Keep the structural skeleton in English: `title` (it doubles as the note filename and wiki-link key — keep it a short English imperative), `id`, `domain`, `type`, `taxon`, `scope`, `evidence_level`, `suggested_promotion_state`, and every `tags` token. Preserve technical terms, identifiers, code, library/function names, and numeric notation verbatim — do not translate them (e.g. "DA 입찰 마감은 10:00", "`select_related('profile')`를 호출한다", "pyarrow 엔진"). Write as a domain expert taking notes for themselves: concise, declarative 문어체, no hedging. The Korean reads naturally — it is not a literal word-for-word translation of an English sentence.
 
 PRACTICAL_INSIGHT (optional, include when relevant):
 - Estimate reusability: how many future sessions might benefit from this knowledge.
@@ -41,12 +42,12 @@ Output:
   "type": "domain_rule",
   "domain": "electricity/smp",
   "title": "Always use KST for SMP timestamps",
-  "content": "For SMP (System Marginal Price) data, always use KST (Asia/Seoul) as the timezone. Never convert to UTC. When joining with external datasets, convert those to KST first.",
-  "reasoning": "The Korean market operator publishes in KST. Converting to UTC introduces off-by-one hour errors at boundaries and causes misaligned joins with market operator data.",
+  "content": "SMP(System Marginal Price) 데이터의 시간대는 항상 KST(Asia/Seoul)를 쓴다. UTC로 변환하지 않는다. 외부 데이터셋과 조인할 때는 그쪽을 먼저 KST로 맞춘다.",
+  "reasoning": "한국 시장운영자가 KST로 발행한다. UTC로 변환하면 경계에서 1시간 off-by-one 오류가 생기고 시장운영자 데이터와의 조인이 어긋난다.",
   "confidence": 0.95,
   "related_ids": [],
   "tags": ["smp", "timezone", "kst", "timestamps", "market-data"],
-  "practical_insight": "Common failure mode — every new SMP integration hits this if not warned."
+  "practical_insight": "흔한 실패 모드 — 경고가 없으면 신규 SMP 연동마다 반복해서 걸린다."
 }
 
 Example 2 — an architecture decision with tradeoff reasoning:
@@ -57,12 +58,12 @@ Output:
   "type": "architecture_decision",
   "domain": "web/postgres",
   "title": "Use separate tag table, not JSONField",
-  "content": "Model many-to-many tags as a separate table with a join. Do not store tag arrays in a JSONField column even when the ORM supports it.",
-  "reasoning": "JSONField cannot be indexed or aggregated efficiently in Postgres for this workload. We migrated away from it after hitting query performance issues in a prior project.",
+  "content": "다대다 태그는 조인을 쓰는 별도 테이블로 모델링한다. ORM이 지원하더라도 태그 배열을 JSONField 컬럼에 저장하지 않는다.",
+  "reasoning": "이 워크로드에서 JSONField는 Postgres에서 효율적으로 인덱싱·집계할 수 없다. 이전 프로젝트에서 쿼리 성능 문제를 겪고 JSONField에서 벗어났다.",
   "confidence": 0.9,
   "related_ids": [],
   "tags": ["postgres", "schema", "jsonfield", "indexing", "tags"],
-  "practical_insight": "Saves a ~1 week migration later if followed from the start."
+  "practical_insight": "처음부터 지키면 나중의 ~1주짜리 마이그레이션을 아낀다."
 }
 
 Example 3 — a debug playbook distilled from a troubleshooting session:
@@ -73,12 +74,12 @@ Output:
   "type": "debug_playbook",
   "domain": "web/django",
   "title": "Prefetch profile when serializing users",
-  "content": "When serializing User querysets, always call `.select_related('profile')` before serialization. Symptom of missing prefetch: request latency scales with batch size.",
-  "reasoning": "The default User serializer accesses user.profile, which triggers a SELECT per row without select_related. At batch sizes above ~20 this dominates request latency.",
+  "content": "User 쿼리셋을 직렬화할 때는 직렬화 전에 항상 `.select_related('profile')`를 호출한다. prefetch 누락의 증상: 요청 지연이 배치 크기에 비례해 커진다.",
+  "reasoning": "기본 User serializer가 user.profile에 접근하는데, select_related 없이는 행마다 SELECT가 발생한다. 배치 크기가 ~20을 넘으면 이게 요청 지연을 지배한다.",
   "confidence": 0.85,
   "related_ids": [],
   "tags": ["django", "orm", "n+1", "select_related", "serializer"],
-  "practical_insight": "Addresses a recurring performance regression in list endpoints."
+  "practical_insight": "리스트 엔드포인트에서 반복되는 성능 회귀를 해결한다."
 }
 
 Example 4 — an anti-pattern captured from a regression:
@@ -89,12 +90,12 @@ Output:
   "type": "anti_pattern",
   "domain": "python/datetime",
   "title": "Never use naive datetime.now()",
-  "content": "In this codebase, never call `datetime.now()` without an explicit timezone. Prefer the helper `now_kst()` defined in common/time.py, or pass `tz=KST` explicitly. Naive datetimes are silently coerced to the process timezone.",
-  "reasoning": "A March 8 outage traced to a cron job running in UTC while records were KST — naive datetime comparisons silently misaligned by 9 hours and caused double-processing. Linter rule added but gaps remain.",
+  "content": "이 코드베이스에서는 명시적 시간대 없이 `datetime.now()`를 호출하지 않는다. common/time.py에 정의된 헬퍼 `now_kst()`를 쓰거나 `tz=KST`를 명시적으로 넘긴다. naive datetime은 조용히 프로세스 시간대로 강제 변환된다.",
+  "reasoning": "3월 8일 장애는 레코드가 KST인데 cron 작업이 UTC로 돌아간 데서 비롯됐다 — naive datetime 비교가 조용히 9시간 어긋나 중복 처리가 발생했다. 린터 규칙을 추가했지만 빈틈은 남아 있다.",
   "confidence": 0.95,
   "related_ids": [],
   "tags": ["datetime", "timezone", "anti-pattern", "cron", "outage"],
-  "practical_insight": "Directly prevents a known incident from recurring."
+  "practical_insight": "알려진 장애의 재발을 직접 막는다."
 }
 
 Example 5 — a tool preference with a clear rationale:
@@ -105,12 +106,12 @@ Output:
   "type": "tool_preference",
   "domain": "data/parquet",
   "title": "Use pyarrow engine, not fastparquet",
-  "content": "When writing pandas DataFrames to Parquet in this project, always pass `engine='pyarrow'`. Do not use fastparquet, even as a fallback.",
-  "reasoning": "fastparquet has known data corruption issues with nullable integer dtypes (Int64, Int32). We observed silent value truncation in production data in a prior project. pyarrow handles the nullable types correctly.",
+  "content": "이 프로젝트에서 pandas DataFrame을 Parquet으로 쓸 때는 항상 `engine='pyarrow'`를 넘긴다. fastparquet은 폴백으로라도 쓰지 않는다.",
+  "reasoning": "fastparquet은 nullable 정수 dtype(Int64, Int32)에서 데이터 손상 이슈가 알려져 있다. 이전 프로젝트의 운영 데이터에서 값이 조용히 잘리는 것을 관측했다. pyarrow는 nullable 타입을 올바르게 처리한다.",
   "confidence": 0.9,
   "related_ids": [],
   "tags": ["pandas", "parquet", "pyarrow", "fastparquet", "data-integrity"],
-  "practical_insight": "Silent data corruption — hard to detect, very expensive to recover from."
+  "practical_insight": "조용한 데이터 손상 — 탐지가 어렵고 복구 비용이 매우 크다."
 }
 
 Example 6 — a code pattern capturing a project convention:
@@ -121,12 +122,12 @@ Output:
   "type": "code_pattern",
   "domain": "python/architecture",
   "title": "Repos take session in constructor",
-  "content": "Repository classes in this project accept the database session as a constructor argument. Do not create sessions inside repositories, do not use context managers within them. The caller owns the session lifecycle and passes it in.",
-  "reasoning": "Session ownership belongs to the request/unit-of-work boundary at the caller level. Repos that create their own session break transaction composition — multiple repo calls within one logical unit would each commit independently.",
+  "content": "이 프로젝트의 repository 클래스는 데이터베이스 세션을 생성자 인자로 받는다. repository 안에서 세션을 만들지 않고, 컨텍스트 매니저도 쓰지 않는다. 세션 수명은 호출자가 소유하고 넘겨준다.",
+  "reasoning": "세션 소유권은 호출자 레벨의 request/unit-of-work 경계에 속한다. 자체 세션을 만드는 repo는 트랜잭션 구성을 깨뜨린다 — 한 논리 단위 안의 여러 repo 호출이 각각 독립적으로 커밋된다.",
   "confidence": 0.85,
   "related_ids": [],
   "tags": ["repository-pattern", "session", "sqlalchemy", "transaction", "unit-of-work"],
-  "practical_insight": "Architectural — consistent enforcement saves a major refactor later."
+  "practical_insight": "구조적 사안 — 일관되게 강제하면 나중의 대규모 리팩터를 아낀다."
 }
 
 GUIDANCE FOR EDGE CASES:
