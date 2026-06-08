@@ -39,3 +39,6 @@ Thumbs.db
 
 # Don't ignore seeds — they're part of the project
 # !seeds/
+_viz_data.json
+mojo-dashboard.html
+mojo-knowledge-graph.html
