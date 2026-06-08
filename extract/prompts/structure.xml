@@ -25,7 +25,7 @@ REQUIREMENTS:
    - suggested_promotion_state: raw | candidate | project_approved | generalized
 9. Always include applies_when and does_not_apply_when. If no exception is known, state the uncertainty instead of pretending there are no limits.
 10. Set human_review_required=true unless the excerpt contains explicit user approval for the exact scope.
-11. LANGUAGE — write the human-readable prose in natural Korean (한국어): the fields `content`, `reasoning`, `applies_when`, `does_not_apply_when`, and `practical_insight`. Keep the structural skeleton in English: `title` (it doubles as the note filename and wiki-link key — keep it a short English imperative), `id`, `domain`, `type`, `taxon`, `scope`, `evidence_level`, `suggested_promotion_state`, and every `tags` token. Preserve technical terms, identifiers, code, library/function names, and numeric notation verbatim — do not translate them (e.g. "DA 입찰 마감은 10:00", "`select_related('profile')`를 호출한다", "pyarrow 엔진"). Write as a domain expert taking notes for themselves: concise, declarative 문어체, no hedging. The Korean reads naturally — it is not a literal word-for-word translation of an English sentence.
+11. LANGUAGE — write the human-readable prose in natural Korean (한국어): the fields `content`, `reasoning`, `applies_when`, `does_not_apply_when`, `practical_insight`, and `title`. The `title` is a short hybrid-Korean imperative/declarative that doubles as the note filename and wiki-link key — keep it concise (≤ ~40 chars) with technical terms in English (e.g. "GBDT 기각 전 weight-boosting 상호작용 확인", "DA 입찰 피처: 17:00 말고 05:00 발행분 사용", "LLM JSON 복구에 rfind('}') 쓰지 마라"). Keep the structural skeleton in English: `id`, `domain`, `type`, `taxon`, `scope`, `evidence_level`, `suggested_promotion_state`, and every `tags` token. Preserve technical terms, identifiers, code, library/function names, and numeric notation verbatim — do not translate them (e.g. "DA 입찰 마감은 10:00", "`select_related('profile')`를 호출한다", "pyarrow 엔진"). Write as a domain expert taking notes for themselves: concise, declarative 문어체, no hedging. The Korean reads naturally — it is not a literal word-for-word translation of an English sentence.
 
 PRACTICAL_INSIGHT (optional, include when relevant):
 - Estimate reusability: how many future sessions might benefit from this knowledge.
@@ -41,7 +41,7 @@ Output:
   "id": "smp-004",
   "type": "domain_rule",
   "domain": "electricity/smp",
-  "title": "Always use KST for SMP timestamps",
+  "title": "SMP timestamp는 항상 KST 사용",
   "content": "SMP(System Marginal Price) 데이터의 시간대는 항상 KST(Asia/Seoul)를 쓴다. UTC로 변환하지 않는다. 외부 데이터셋과 조인할 때는 그쪽을 먼저 KST로 맞춘다.",
   "reasoning": "한국 시장운영자가 KST로 발행한다. UTC로 변환하면 경계에서 1시간 off-by-one 오류가 생기고 시장운영자 데이터와의 조인이 어긋난다.",
   "confidence": 0.95,
@@ -57,7 +57,7 @@ Output:
   "id": "web-011",
   "type": "architecture_decision",
   "domain": "web/postgres",
-  "title": "Use separate tag table, not JSONField",
+  "title": "태그는 JSONField 말고 별도 테이블로",
   "content": "다대다 태그는 조인을 쓰는 별도 테이블로 모델링한다. ORM이 지원하더라도 태그 배열을 JSONField 컬럼에 저장하지 않는다.",
   "reasoning": "이 워크로드에서 JSONField는 Postgres에서 효율적으로 인덱싱·집계할 수 없다. 이전 프로젝트에서 쿼리 성능 문제를 겪고 JSONField에서 벗어났다.",
   "confidence": 0.9,
@@ -73,7 +73,7 @@ Output:
   "id": "dj-007",
   "type": "debug_playbook",
   "domain": "web/django",
-  "title": "Prefetch profile when serializing users",
+  "title": "user 직렬화 시 profile은 select_related로 prefetch",
   "content": "User 쿼리셋을 직렬화할 때는 직렬화 전에 항상 `.select_related('profile')`를 호출한다. prefetch 누락의 증상: 요청 지연이 배치 크기에 비례해 커진다.",
   "reasoning": "기본 User serializer가 user.profile에 접근하는데, select_related 없이는 행마다 SELECT가 발생한다. 배치 크기가 ~20을 넘으면 이게 요청 지연을 지배한다.",
   "confidence": 0.85,
@@ -89,7 +89,7 @@ Output:
   "id": "py-014",
   "type": "anti_pattern",
   "domain": "python/datetime",
-  "title": "Never use naive datetime.now()",
+  "title": "naive datetime.now() 쓰지 마라",
   "content": "이 코드베이스에서는 명시적 시간대 없이 `datetime.now()`를 호출하지 않는다. common/time.py에 정의된 헬퍼 `now_kst()`를 쓰거나 `tz=KST`를 명시적으로 넘긴다. naive datetime은 조용히 프로세스 시간대로 강제 변환된다.",
   "reasoning": "3월 8일 장애는 레코드가 KST인데 cron 작업이 UTC로 돌아간 데서 비롯됐다 — naive datetime 비교가 조용히 9시간 어긋나 중복 처리가 발생했다. 린터 규칙을 추가했지만 빈틈은 남아 있다.",
   "confidence": 0.95,
@@ -105,7 +105,7 @@ Output:
   "id": "data-019",
   "type": "tool_preference",
   "domain": "data/parquet",
-  "title": "Use pyarrow engine, not fastparquet",
+  "title": "Parquet은 fastparquet 말고 pyarrow engine 사용",
   "content": "이 프로젝트에서 pandas DataFrame을 Parquet으로 쓸 때는 항상 `engine='pyarrow'`를 넘긴다. fastparquet은 폴백으로라도 쓰지 않는다.",
   "reasoning": "fastparquet은 nullable 정수 dtype(Int64, Int32)에서 데이터 손상 이슈가 알려져 있다. 이전 프로젝트의 운영 데이터에서 값이 조용히 잘리는 것을 관측했다. pyarrow는 nullable 타입을 올바르게 처리한다.",
   "confidence": 0.9,
@@ -121,7 +121,7 @@ Output:
   "id": "arch-022",
   "type": "code_pattern",
   "domain": "python/architecture",
-  "title": "Repos take session in constructor",
+  "title": "repository는 생성자로 session 주입받기",
   "content": "이 프로젝트의 repository 클래스는 데이터베이스 세션을 생성자 인자로 받는다. repository 안에서 세션을 만들지 않고, 컨텍스트 매니저도 쓰지 않는다. 세션 수명은 호출자가 소유하고 넘겨준다.",
   "reasoning": "세션 소유권은 호출자 레벨의 request/unit-of-work 경계에 속한다. 자체 세션을 만드는 repo는 트랜잭션 구성을 깨뜨린다 — 한 논리 단위 안의 여러 repo 호출이 각각 독립적으로 커밋된다.",
   "confidence": 0.85,
@@ -146,7 +146,7 @@ Respond ONLY with JSON matching this schema. No markdown fences, no commentary, 
   "type": "domain_rule|architecture_decision|debug_playbook|anti_pattern|tool_preference|code_pattern",
   "taxon": "implementation_pattern|debugging_pattern|evaluation_rule|leakage_warning|environment_constraint|project_convention|user_preference|decision_rationale|anti_pattern|tool_usage_rule|deployment_note|research_hypothesis|unresolved_question",
   "domain": "area/subarea",
-  "title": "Short imperative title",
+  "title": "짧은 하이브리드 한국어 제목 (기술용어는 영어)",
   "content": "Scoped advisory rule, pattern, or observation",
   "reasoning": "Why this rule exists",
   "scope": "universal|domain|project|environment|workflow|incident|user_preference",
