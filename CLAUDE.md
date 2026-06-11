@@ -21,6 +21,22 @@ Hooks(자동 추출) → JSONL 파싱(Claude+Codex) → LLM 추출(headless CLI,
 - **Storage**: SQLite (knowledge, observations, raw_sessions, injections,
   extraction_costs) + Obsidian vault (기본 ~/mojo-vault)
 
+## Hook 배포 — 단일 진실은 레포 (⚠️ 재발 방지)
+실행되는 hook은 `~/.claude/settings.json`이 가리키는 `~/.mojo/hooks/`다.
+레포 `hooks/` → (uv 빌드) 설치본 site-packages → (`mojo init` 복사) `~/.mojo/hooks/`,
+이 3계층은 **항상 일치해야 한다**. 어긋나면 재귀 가드 같은 fix가 조용히 소실된다.
+- **배포본(`~/.mojo/hooks/`)을 손으로 고치지 않는다.** `mojo init`이 설치본으로
+  덮어써서 손수정이 날아간다 (실제로 겪음). 고칠 건 레포에서만, 아래로 흘려보낸다.
+- **hook 수정은 설치본에 자동 반영되지 않는다.** `uv tool install --force`는 버전이
+  같으면 빌드를 캐시 재사용한다 → `pyproject.toml` 버전을 올리거나 hook을 직접 복사해야
+  설치본·배포본에 반영된다. 수정 후 3계층 md5 일치를 확인한다.
+
+## 재귀 차단은 hook 경계에서 (왜)
+SessionEnd가 spawn하는 extract 서브트리에 `MOJO_EXTRACTION=1`을 **hook이 직접** 건다.
+llm_backend가 거는 것에만 의존하면, 설치 mojo 버전·백엔드가 바뀔 때 headless `claude -p`가
+플래그 없이 떠서 추출→세션종료→추출 무한 폭주(토큰 전소)가 난다. hook은 항상 도는
+단일 관문이므로 거기서 거는 것이 버전·백엔드와 무관하게 안전하다.
+
 ## Code Conventions
 - Python 3.10+, type hints 사용
 - `db_ops.py`가 모든 DB 접근 중앙화. 직접 SQL 쓰지 않기.

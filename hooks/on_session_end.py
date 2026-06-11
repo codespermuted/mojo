@@ -16,9 +16,11 @@ The target ``mojo.db`` is resolved at runtime from the payload's
 registration transparently routes per-project sessions to their
 sidecar stores when a ``.mojo`` directory exists alongside them.
 
-Recursion guard: extraction subprocesses export MOJO_EXTRACTION=1; when
-this hook fires inside one (headless claude sessions fire hooks too), it
-bails immediately.
+Recursion guard: this hook exports MOJO_EXTRACTION=1 into the spawned
+``mojo extract`` subtree, so any headless ``claude -p`` it launches (which
+fires these same hooks) inherits the flag and bails immediately. Without
+this, each extraction's headless session would re-trigger extraction —
+an exponential process fan-out that burns the whole token budget at once.
 """
 
 import json
@@ -61,6 +63,12 @@ def _spawn_auto_extract(mojo_db: Path, session_id: str,
         log_file.flush()
         env = dict(os.environ)
         env["MOJO_HOME"] = str(mojo_home)
+        # Mark the whole extraction subtree so any headless `claude -p`
+        # spawned downstream inherits the flag and its hooks bail. This is
+        # the hook-boundary guard: it does not depend on the installed
+        # mojo's backend setting MOJO_EXTRACTION itself, so a stale/odd
+        # child binary can never re-trigger extraction recursively.
+        env["MOJO_EXTRACTION"] = "1"
         subprocess.Popen(
             [mojo_bin, "extract",
              "--session", transcript_path,
