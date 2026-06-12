@@ -73,6 +73,23 @@ const TYPES = {
   code_pattern:           { icon:"📝",  label:"Code Pattern", color:"#98D8C8" },
 };
 
+// Two orthogonal classification facets (supersede the single `type` axis; see
+// docs/FACETS.md). Intent colors deliberately mirror the legacy type each folds in.
+const INTENTS = {
+  constraint:    { icon:"🛡️", label:"Constraint", color:"#FF6B6B" },
+  decision:      { icon:"🧭", label:"Decision",   color:"#FFB347" },
+  playbook:      { icon:"🔧", label:"Playbook",   color:"#87CEEB" },
+  preference:    { icon:"🔨", label:"Preference", color:"#DDA0DD" },
+  open_question: { icon:"❓", label:"Open Q",     color:"#94A3B8" },
+};
+const SUBJECTS = {
+  data:     { icon:"🗄️", label:"Data",     color:"#34D399" },
+  model:    { icon:"🧠", label:"Model",    color:"#A78BFA" },
+  pipeline: { icon:"⚙️", label:"Pipeline", color:"#60A5FA" },
+  tooling:  { icon:"🛠️", label:"Tooling",  color:"#FBBF24" },
+  external: { icon:"🔌", label:"External", color:"#F472B6" },
+};
+
 // Mirrors db_ops.CONFIDENCE_GRADES. Backend sends the resolved letter in `grade`.
 const GRADES = {
   A: { label:"Verified",     color:"#4ECDC4", desc:"Multi-source confirmed or usage-validated" },
@@ -225,6 +242,18 @@ const TierBadge = ({ tier }) => {
       {t.key}·{t.label}
     </Badge>
   );
+};
+
+const IntentBadge = ({ intent }) => {
+  if (!intent) return null;
+  const t = INTENTS[intent] || { icon:"·", label:intent, color:"#999" };
+  return <Badge bg={`${t.color}15`} color={t.color} border={`${t.color}30`}>{t.icon} {t.label}</Badge>;
+};
+
+const SubjectBadge = ({ subject }) => {
+  if (!subject) return null;
+  const t = SUBJECTS[subject] || { icon:"·", label:subject, color:"#999" };
+  return <Badge bg={`${t.color}15`} color={t.color} border={`${t.color}30`}>{t.icon} {t.label}</Badge>;
 };
 
 // ─── Graph View ──────────────────────────────────────────
@@ -1130,6 +1159,8 @@ function KCard({
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap", marginBottom:5 }}>
 	            <TypeBadge type={item.type} />
+	            <IntentBadge intent={item.intent} />
+	            <SubjectBadge subject={item.subject} />
 	            <TierBadge tier={tierOf(item)} />
 	            <Badge bg="#64748B18" color="#94A3B8" border="#64748B30">{item.scope || "project"}</Badge>
 	            <Badge bg="#64748B18" color="#CBD5E1" border="#64748B30">{(item.promotion_state || "candidate").replace("_", " ")}</Badge>
@@ -1312,6 +1343,8 @@ function MojoDashboard() {
   const [selTypes, setSelTypes] = useState(() => new Set());
   const [selSources, setSelSources] = useState(() => new Set());
   const [selStatuses, setSelStatuses] = useState(() => new Set());
+  const [selIntents, setSelIntents] = useState(() => new Set());
+  const [selSubjects, setSelSubjects] = useState(() => new Set());
   const [expandedDomains, setExpandedDomains] = useState(() => new Set());
   const [selDetailIds, setSelDetailIds] = useState(() => new Set());
   const [detailsByParent, setDetailsByParent] = useState({});
@@ -1338,6 +1371,8 @@ function MojoDashboard() {
   const toggleType = toggleInSet(setSelTypes);
   const toggleSource = toggleInSet(setSelSources);
   const toggleStatus = toggleInSet(setSelStatuses);
+  const toggleIntent = toggleInSet(setSelIntents);
+  const toggleSubject = toggleInSet(setSelSubjects);
   const toggleDomainExpand = toggleInSet(setExpandedDomains);
   const toggleDetailExpand = toggleInSet(setExpandedDetailIds);
 
@@ -1488,6 +1523,8 @@ function MojoDashboard() {
     if (!matchesFilters(target)) {
       setSelDomains(new Set());
       setSelTypes(new Set());
+      setSelIntents(new Set());
+      setSelSubjects(new Set());
       setSelSources(new Set());
       setSelStatuses(new Set());
       setSearch("");
@@ -1523,6 +1560,8 @@ function MojoDashboard() {
       if (!ok) return false;
     }
     if (selTypes.size && !selTypes.has(i.type)) return false;
+    if (selIntents.size && !selIntents.has(i.intent)) return false;
+    if (selSubjects.size && !selSubjects.has(i.subject)) return false;
     if (selSources.size && !selSources.has(tierOf(i))) return false;
     if (selStatuses.size) {
       const st = statusOf(i);
@@ -1702,6 +1741,40 @@ function MojoDashboard() {
           })}
 
           <div style={{ padding:"14px 12px 8px", fontSize:9.5, color:"var(--text-faint)", textTransform:"uppercase", letterSpacing:"0.1em", borderTop:"1px solid var(--border)", marginTop:10, display:"flex", justifyContent:"space-between" }}>
+            <span>Intent</span>
+            {selIntents.size > 0 && <span onClick={() => setSelIntents(new Set())} style={{ cursor:"pointer", color:"var(--text-dim)", fontSize:9, textTransform:"none", letterSpacing:0 }}>clear</span>}
+          </div>
+          {Object.entries(INTENTS).map(([k, v]) => {
+            const cnt = active.filter(i => i.intent === k).length;
+            if (!cnt) return null;
+            const sel = selIntents.has(k);
+            return <div key={k} onClick={() => toggleIntent(k)}
+              className="sb-row"
+              title={v.label}
+              style={{ padding:"4px 12px", cursor:"pointer", fontSize:11.5, color: sel ? v.color : "var(--text-mid)", background: sel ? `${v.color}18` : "transparent", borderLeft: sel ? `2px solid ${v.color}` : "2px solid transparent" }}>
+              <span className="sb-label">{v.icon} {v.label}</span>
+              <span className="sb-count">{cnt}</span>
+            </div>;
+          })}
+
+          <div style={{ padding:"14px 12px 8px", fontSize:9.5, color:"var(--text-faint)", textTransform:"uppercase", letterSpacing:"0.1em", borderTop:"1px solid var(--border)", marginTop:10, display:"flex", justifyContent:"space-between" }}>
+            <span>Subject</span>
+            {selSubjects.size > 0 && <span onClick={() => setSelSubjects(new Set())} style={{ cursor:"pointer", color:"var(--text-dim)", fontSize:9, textTransform:"none", letterSpacing:0 }}>clear</span>}
+          </div>
+          {Object.entries(SUBJECTS).map(([k, v]) => {
+            const cnt = active.filter(i => i.subject === k).length;
+            if (!cnt) return null;
+            const sel = selSubjects.has(k);
+            return <div key={k} onClick={() => toggleSubject(k)}
+              className="sb-row"
+              title={v.label}
+              style={{ padding:"4px 12px", cursor:"pointer", fontSize:11.5, color: sel ? v.color : "var(--text-mid)", background: sel ? `${v.color}18` : "transparent", borderLeft: sel ? `2px solid ${v.color}` : "2px solid transparent" }}>
+              <span className="sb-label">{v.icon} {v.label}</span>
+              <span className="sb-count">{cnt}</span>
+            </div>;
+          })}
+
+          <div style={{ padding:"14px 12px 8px", fontSize:9.5, color:"var(--text-faint)", textTransform:"uppercase", letterSpacing:"0.1em", borderTop:"1px solid var(--border)", marginTop:10, display:"flex", justifyContent:"space-between" }}>
             <span>View</span>
             {selStatuses.size > 0 && <span onClick={() => setSelStatuses(new Set())} style={{ cursor:"pointer", color:"var(--text-dim)", fontSize:9, textTransform:"none", letterSpacing:0 }}>clear</span>}
           </div>
@@ -1765,7 +1838,7 @@ function MojoDashboard() {
                 style={{ width:"100%", padding:"9px 12px 9px 32px", borderRadius:7, border:"1px solid var(--border-strong)", background:"var(--card)", color:"var(--text-main)", fontSize:12.5, outline:"none", fontFamily:"'JetBrains Mono',monospace" }} />
               <span style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)", color:"var(--text-faint)", fontSize:13 }}>⌕</span>
             </div>
-            {(selDomains.size || selTypes.size || selSources.size || selStatuses.size || search || selSessionId) ? (
+            {(selDomains.size || selTypes.size || selIntents.size || selSubjects.size || selSources.size || selStatuses.size || search || selSessionId) ? (
               <div style={{ display:"flex", gap:5, marginTop:8, flexWrap:"wrap", alignItems:"center" }}>
                 <span style={{ fontSize:10, color:"var(--text-dim)" }}>Filters:</span>
                 {[...selDomains].map(d => (
@@ -1773,6 +1846,12 @@ function MojoDashboard() {
                 ))}
                 {[...selTypes].map(t => (
                   <span key={`t-${t}`} onClick={() => toggleType(t)} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:`${TYPES[t]?.color}18`, color:TYPES[t]?.color, cursor:"pointer" }}>{TYPES[t]?.label} ×</span>
+                ))}
+                {[...selIntents].map(t => (
+                  <span key={`i-${t}`} onClick={() => toggleIntent(t)} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:`${INTENTS[t]?.color}18`, color:INTENTS[t]?.color, cursor:"pointer" }}>{INTENTS[t]?.icon} {INTENTS[t]?.label} ×</span>
+                ))}
+                {[...selSubjects].map(t => (
+                  <span key={`sub-${t}`} onClick={() => toggleSubject(t)} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:`${SUBJECTS[t]?.color}18`, color:SUBJECTS[t]?.color, cursor:"pointer" }}>{SUBJECTS[t]?.icon} {SUBJECTS[t]?.label} ×</span>
                 ))}
                 {[...selSources].map(s => (
                   <span key={`s-${s}`} onClick={() => toggleSource(s)} style={{ fontSize:10, padding:"1px 7px", borderRadius:4, background:`${TIERS[s]?.color}18`, color:TIERS[s]?.color, cursor:"pointer" }}>{s} · {TIERS[s]?.label} ×</span>
@@ -1787,6 +1866,8 @@ function MojoDashboard() {
                   onClick={() => {
                     setSelDomains(new Set());
                     setSelTypes(new Set());
+                    setSelIntents(new Set());
+                    setSelSubjects(new Set());
                     setSelSources(new Set());
                     setSelStatuses(new Set());
                     setSearch("");
