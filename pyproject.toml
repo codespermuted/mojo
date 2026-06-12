@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mojo-extract"
-version = "0.2.2"
+version = "0.3.0"
 description = "Local-first knowledge pipeline that distills Claude Code sessions into durable, reusable CLAUDE.md context."
 readme = "README.md"
 license = { file = "LICENSE" }

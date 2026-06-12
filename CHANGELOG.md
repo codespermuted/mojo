@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-06-12
+
+Reclassify knowledge on two orthogonal facets after an audit found the
+single `type` axis was not MECE.
+
+### Added
+- **Classification facets `intent` × `subject`** (supersede the legacy single
+  `type` axis, which is kept for backward-compat). `intent`: constraint |
+  decision | playbook | preference | open_question. `subject`: data | model |
+  pipeline | tooling | external. An audit of the live store showed `type` mixed
+  three division axes, so one concept (operational-data leakage) fragmented
+  across 5 of 6 types; the two facets are near-MECE (cross-validated Cohen's
+  κ: subject 1.000, intent 0.870). See `docs/FACETS.md`.
+- `db_ops.default_facets()` coarse fallback from legacy type/taxon, and
+  `scripts/backfill_facets.py` (+ `seeds/facets_backfill.json`) to backfill
+  existing rows. Extractor (`structure.xml`) now emits both facets.
+
+### Changed
+- Additive `intent`/`subject` columns on `knowledge` (in-place migration).
+- Dashboard exposes facets via the API; default port `8765` → `8766`.
+
 ## [0.2.1] — 2026-06-08
 
 Hardening pass after an adversarial multi-agent review of 0.2.0, plus
