@@ -54,6 +54,25 @@ def test_save_fills_facets_from_legacy_when_missing(tmp_path):
     assert (r["intent"], r["subject"]) == ("playbook", "model")
 
 
+def test_link_detail_sets_detail_status(tmp_path):
+    # structure relies on this: linking a standalone card must flip it to
+    # status='detail' (else it never collapses under the summary in the UI).
+    db = _fresh_db(tmp_path)
+    db_ops.save_knowledge(db, {
+        "id": "sum-x", "type": "domain_rule", "domain": "d", "title": "t",
+        "content": "c", "status": "summary", "detail_ids": [],
+    })
+    db_ops.save_knowledge(db, {
+        "id": "d-1", "type": "domain_rule", "domain": "d", "title": "t", "content": "c",
+    })
+    db_ops.link_detail_to_summary(db, "d-1", "sum-x")
+    r = db.execute("SELECT status, parent_id FROM knowledge WHERE id='d-1'").fetchone()
+    assert r["status"] == "detail"
+    assert r["parent_id"] == "sum-x"
+    s = db.execute("SELECT detail_ids FROM knowledge WHERE id='sum-x'").fetchone()
+    assert "d-1" in s["detail_ids"]
+
+
 def test_backfill_seed_is_valid():
     seed = json.loads((ROOT / "seeds" / "facets_backfill.json").read_text())
     assert len(seed) == 80

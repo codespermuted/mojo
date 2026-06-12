@@ -865,8 +865,8 @@ def link_detail_to_summary(db: sqlite3.Connection,
                            detail_id: str, summary_id: str):
     """Attach a detail to a summary, updating both sides of the link."""
     db.execute(
-        "UPDATE knowledge SET parent_id = ?, updated_at = datetime('now') "
-        "WHERE id = ?",
+        "UPDATE knowledge SET parent_id = ?, status = 'detail', "
+        "updated_at = datetime('now') WHERE id = ?",
         (summary_id, detail_id),
     )
     row = db.execute(

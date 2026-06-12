@@ -1728,7 +1728,7 @@ function MojoDashboard() {
             {selTypes.size > 0 && <span onClick={() => setSelTypes(new Set())} style={{ cursor:"pointer", color:"var(--text-dim)", fontSize:9, textTransform:"none", letterSpacing:0 }}>clear</span>}
           </div>
           {Object.entries(TYPES).map(([k, v]) => {
-            const cnt = active.filter(i => i.type === k).length;
+            const cnt = baseVisible.filter(i => i.type === k).length;
             if (!cnt) return null;
             const sel = selTypes.has(k);
             return <div key={k} onClick={() => toggleType(k)}
@@ -1745,7 +1745,7 @@ function MojoDashboard() {
             {selIntents.size > 0 && <span onClick={() => setSelIntents(new Set())} style={{ cursor:"pointer", color:"var(--text-dim)", fontSize:9, textTransform:"none", letterSpacing:0 }}>clear</span>}
           </div>
           {Object.entries(INTENTS).map(([k, v]) => {
-            const cnt = active.filter(i => i.intent === k).length;
+            const cnt = baseVisible.filter(i => i.intent === k).length;
             if (!cnt) return null;
             const sel = selIntents.has(k);
             return <div key={k} onClick={() => toggleIntent(k)}
@@ -1762,7 +1762,7 @@ function MojoDashboard() {
             {selSubjects.size > 0 && <span onClick={() => setSelSubjects(new Set())} style={{ cursor:"pointer", color:"var(--text-dim)", fontSize:9, textTransform:"none", letterSpacing:0 }}>clear</span>}
           </div>
           {Object.entries(SUBJECTS).map(([k, v]) => {
-            const cnt = active.filter(i => i.subject === k).length;
+            const cnt = baseVisible.filter(i => i.subject === k).length;
             if (!cnt) return null;
             const sel = selSubjects.has(k);
             return <div key={k} onClick={() => toggleSubject(k)}

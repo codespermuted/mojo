@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from db_ops import (  # noqa: E402
     CONFIDENCE_GRADES,
+    default_facets,
     evidence_based_grade,
     get_db,
     get_details_for,
@@ -515,7 +516,7 @@ def unstructure_summary(kid: str):
         now = datetime.now().isoformat()
         for did in detail_ids:
             db.execute(
-                "UPDATE knowledge SET parent_id = NULL, status = 'detail', updated_at = ? WHERE id = ?",
+                "UPDATE knowledge SET parent_id = NULL, status = 'standalone', updated_at = ? WHERE id = ?",
                 (now, did),
             )
         db.execute("DELETE FROM knowledge WHERE id = ?", (kid,))
@@ -533,18 +534,14 @@ def _structure_details(detail_ids: list[str]) -> dict:
     if not detail_ids:
         raise HTTPException(status_code=400, detail="detail_ids required")
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise HTTPException(
-            status_code=400,
-            detail="ANTHROPIC_API_KEY not set. Enable LLM structuring by exporting the key, or refine manually.",
-        )
-
     db = get_db()
     try:
         placeholders = ",".join("?" * len(detail_ids))
+        # Accept standalone (the common case — user picks loose cards) and
+        # already-detail rows; never re-wrap an existing summary.
         rows = db.execute(
-            f"SELECT * FROM knowledge WHERE id IN ({placeholders}) AND status = 'detail'",
+            f"SELECT * FROM knowledge WHERE id IN ({placeholders}) "
+            f"AND status IN ('standalone', 'detail') AND archived = 0",
             detail_ids,
         ).fetchall()
         details = [_row_to_dict(r) for r in rows]
@@ -583,30 +580,37 @@ def _structure_details(detail_ids: list[str]) -> dict:
             "5. domain: Infer from detail items\n"
             "6. type: domain_rule | architecture_decision | debug_playbook | "
             "anti_pattern | tool_preference | code_pattern\n"
+            "6b. intent (1st-class facet): constraint | decision | playbook | preference | open_question\n"
+            "6c. subject (1st-class facet): data | model | pipeline | tooling | external\n"
             "7. related_ids: From existing knowledge list, items sharing domain context\n"
             "8. related_reasoning: {id: one-sentence reason} per related item\n"
             "9. supersedes: id of a standalone item this replaces, or null\n"
             "10. taxon, scope, applies_when, does_not_apply_when, evidence_level, "
             "promotion_state, safe_to_generalize, counterexamples, conflicts_with\n"
+            "11. LANGUAGE: write title, content, reasoning, applies_when, "
+            "does_not_apply_when in natural Korean (한국어); keep identifiers, code, "
+            "library/table names, and numbers verbatim in English.\n"
             "Do not produce universal Always/Never guidance unless the details prove it.\n\n"
-            "Return ONLY JSON with keys: title, content, reasoning, type, domain, "
-            "taxon, scope, applies_when, does_not_apply_when, evidence_level, "
-            "promotion_state, safe_to_generalize, counterexamples, conflicts_with, "
-            "tags, confidence (0-1), related_ids, related_reasoning, supersedes."
+            "Return ONLY JSON with keys: title, content, reasoning, type, intent, "
+            "subject, domain, taxon, scope, applies_when, does_not_apply_when, "
+            "evidence_level, promotion_state, safe_to_generalize, counterexamples, "
+            "conflicts_with, tags, confidence (0-1), related_ids, related_reasoning, supersedes."
         )
 
+        from extract.llm_backend import get_backend, ROLE_STRUCTURE, BackendError
+        sys_prompt = (
+            "You synthesize raw knowledge items into ONE clean, actionable summary. "
+            "Return ONLY a JSON object — no markdown fences, no commentary."
+        )
         try:
-            import anthropic
-        except ImportError as e:
-            raise HTTPException(status_code=500, detail=f"anthropic SDK not installed: {e}")
+            # Default backend is headless `claude -p` (subscription, $0, no API
+            # key). Honors MOJO_LLM_BACKEND / config like the extract pipeline.
+            backend = get_backend()
+            out = backend.complete(sys_prompt, prompt, max_tokens=1200, role=ROLE_STRUCTURE)
+        except BackendError as e:
+            raise HTTPException(status_code=502, detail=f"LLM backend failed: {e}")
 
-        client = anthropic.Anthropic()
-        response = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1000,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = response.content[0].text.strip()
+        text = (out.get("text") or "").strip()
         if text.startswith("```"):
             text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
 
@@ -617,10 +621,15 @@ def _structure_details(detail_ids: list[str]) -> dict:
 
         summary_id = f"sum-{hashlib.md5(f'{time.time()}-{detail_ids[0]}'.encode()).hexdigest()[:8]}"
         confidence = float(result.get("confidence", 0.85))
+        _stype = result.get("type", details[0]["type"])
+        _staxon = result.get("taxon", details[0].get("taxon", ""))
+        _di, _ds = default_facets(_stype, _staxon)
         summary = {
             "id": summary_id,
-            "type": result.get("type", details[0]["type"]),
-            "taxon": result.get("taxon", details[0].get("taxon", "")),
+            "type": _stype,
+            "intent": result.get("intent") or details[0].get("intent") or _di,
+            "subject": result.get("subject") or details[0].get("subject") or _ds,
+            "taxon": _staxon,
             "domain": result.get("domain", details[0]["domain"]),
             "title": result["title"],
             "content": result["content"],
@@ -656,11 +665,11 @@ def _structure_details(detail_ids: list[str]) -> dict:
         for did in detail_ids:
             link_detail_to_summary(db, did, summary_id)
 
-        usage = response.usage
-        cost = (usage.input_tokens * 3.0 + usage.output_tokens * 15.0) / 1_000_000
+        usage = out.get("usage") or {}
+        cost = out.get("cost_usd", 0.0)
         log_extraction_cost(
-            db, summary_id, "structure", "sonnet",
-            usage.input_tokens, usage.output_tokens, cost,
+            db, summary_id, "structure", out.get("model", "structure"),
+            usage.get("input_tokens", 0), usage.get("output_tokens", 0), cost,
         )
 
         superseded = result.get("supersedes")
