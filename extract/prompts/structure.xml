@@ -18,14 +18,22 @@ REQUIREMENTS:
 5. Domain path is hierarchical, lowercase, slash-separated. Examples: "electricity/smp", "ml/timeseries", "web/fastapi", "infra/k8s", "data/pipelines".
 6. Generate a unique ID in the form "{domain_short}-{sequence}" where domain_short is 2–4 letters. Examples: "smp-004", "ts-006", "fapi-012". Pick a sequence that doesn't collide with existing knowledge shown below.
 7. Tags are 3–7 lowercase tokens for searchability. Prefer tokens that future sessions would naturally query for.
-8. Separate quality from applicability:
-   - taxon: implementation_pattern | debugging_pattern | evaluation_rule | leakage_warning | environment_constraint | project_convention | user_preference | decision_rationale | anti_pattern | tool_usage_rule | deployment_note | research_hypothesis | unresolved_question
+8. Classify on two orthogonal facets — these are the 1st-class labels. (The `type` field below is legacy, kept for back-compat: still emit the best-matching type, but decide meaning via intent + subject. An audit of the live store found a single `type` axis mixed motive/use/target, so one concept fragmented across many types.)
+   - intent — the knowledge's MOTIVE: constraint | decision | playbook | preference | open_question
+       constraint = a fact/rule/prohibition/pitfall to honor ("always X", or "don't Y — it breaks/leaks"); deliberately merges plain rules and warnings (one prescriptive spectrum).
+       decision   = a design choice picked among alternatives after weighing trade-offs.
+       playbook   = a diagnostic/debugging procedure (symptom → check/fix).
+       preference = a tool/library taste preference.   open_question = unresolved.
+   - subject — what the knowledge is ABOUT: data | model | pipeline | tooling | external
+       data = operational-data correctness (availability / point-in-time / leakage / timezone / grain / source integration); model = modeling (architecture, loss, training, evaluation, regime, feature engineering); pipeline = code/pipeline mechanism (caching, feature-set branching, status sentinels, UI, parsing); tooling = meta-tool architecture (mojo / mlmon / the harness / session monitoring); external = third-party API / library / CLI quirks.
+   Then separate quality from applicability:
+   - taxon (legacy fine-grained tag): implementation_pattern | debugging_pattern | evaluation_rule | leakage_warning | environment_constraint | project_convention | user_preference | decision_rationale | anti_pattern | tool_usage_rule | deployment_note | research_hypothesis | unresolved_question
    - scope: universal | domain | project | environment | workflow | incident | user_preference
    - evidence_level: raw_observation | local_rule | generalized_principle | policy
    - suggested_promotion_state: raw | candidate | project_approved | generalized
 9. Always include applies_when and does_not_apply_when. If no exception is known, state the uncertainty instead of pretending there are no limits.
 10. Set human_review_required=true unless the excerpt contains explicit user approval for the exact scope.
-11. LANGUAGE — write the human-readable prose in natural Korean (한국어): the fields `content`, `reasoning`, `applies_when`, `does_not_apply_when`, `practical_insight`, and `title`. The `title` is a short hybrid-Korean imperative/declarative that doubles as the note filename and wiki-link key — keep it concise (≤ ~40 chars) with technical terms in English (e.g. "GBDT 기각 전 weight-boosting 상호작용 확인", "DA 입찰 피처: 17:00 말고 05:00 발행분 사용", "LLM JSON 복구에 rfind('}') 쓰지 마라"). Keep the structural skeleton in English: `id`, `domain`, `type`, `taxon`, `scope`, `evidence_level`, `suggested_promotion_state`, and every `tags` token. Preserve technical terms, identifiers, code, library/function names, and numeric notation verbatim — do not translate them (e.g. "DA 입찰 마감은 10:00", "`select_related('profile')`를 호출한다", "pyarrow 엔진"). Write as a domain expert taking notes for themselves: concise, declarative 문어체, no hedging. The Korean reads naturally — it is not a literal word-for-word translation of an English sentence.
+11. LANGUAGE — write the human-readable prose in natural Korean (한국어): the fields `content`, `reasoning`, `applies_when`, `does_not_apply_when`, `practical_insight`, and `title`. The `title` is a short hybrid-Korean imperative/declarative that doubles as the note filename and wiki-link key — keep it concise (≤ ~40 chars) with technical terms in English (e.g. "GBDT 기각 전 weight-boosting 상호작용 확인", "DA 입찰 피처: 17:00 말고 05:00 발행분 사용", "LLM JSON 복구에 rfind('}') 쓰지 마라"). Keep the structural skeleton in English: `id`, `domain`, `type`, `intent`, `subject`, `taxon`, `scope`, `evidence_level`, `suggested_promotion_state`, and every `tags` token. Preserve technical terms, identifiers, code, library/function names, and numeric notation verbatim — do not translate them (e.g. "DA 입찰 마감은 10:00", "`select_related('profile')`를 호출한다", "pyarrow 엔진"). Write as a domain expert taking notes for themselves: concise, declarative 문어체, no hedging. The Korean reads naturally — it is not a literal word-for-word translation of an English sentence.
 
 PRACTICAL_INSIGHT (optional, include when relevant):
 - Estimate reusability: how many future sessions might benefit from this knowledge.
@@ -40,6 +48,8 @@ Output:
 {
   "id": "smp-004",
   "type": "domain_rule",
+  "intent": "constraint",
+  "subject": "data",
   "domain": "electricity/smp",
   "title": "SMP timestamp는 항상 KST 사용",
   "content": "SMP(System Marginal Price) 데이터의 시간대는 항상 KST(Asia/Seoul)를 쓴다. UTC로 변환하지 않는다. 외부 데이터셋과 조인할 때는 그쪽을 먼저 KST로 맞춘다.",
@@ -56,6 +66,8 @@ Output:
 {
   "id": "web-011",
   "type": "architecture_decision",
+  "intent": "decision",
+  "subject": "pipeline",
   "domain": "web/postgres",
   "title": "태그는 JSONField 말고 별도 테이블로",
   "content": "다대다 태그는 조인을 쓰는 별도 테이블로 모델링한다. ORM이 지원하더라도 태그 배열을 JSONField 컬럼에 저장하지 않는다.",
@@ -72,6 +84,8 @@ Output:
 {
   "id": "dj-007",
   "type": "debug_playbook",
+  "intent": "playbook",
+  "subject": "external",
   "domain": "web/django",
   "title": "user 직렬화 시 profile은 select_related로 prefetch",
   "content": "User 쿼리셋을 직렬화할 때는 직렬화 전에 항상 `.select_related('profile')`를 호출한다. prefetch 누락의 증상: 요청 지연이 배치 크기에 비례해 커진다.",
@@ -88,6 +102,8 @@ Output:
 {
   "id": "py-014",
   "type": "anti_pattern",
+  "intent": "constraint",
+  "subject": "pipeline",
   "domain": "python/datetime",
   "title": "naive datetime.now() 쓰지 마라",
   "content": "이 코드베이스에서는 명시적 시간대 없이 `datetime.now()`를 호출하지 않는다. common/time.py에 정의된 헬퍼 `now_kst()`를 쓰거나 `tz=KST`를 명시적으로 넘긴다. naive datetime은 조용히 프로세스 시간대로 강제 변환된다.",
@@ -104,6 +120,8 @@ Output:
 {
   "id": "data-019",
   "type": "tool_preference",
+  "intent": "preference",
+  "subject": "external",
   "domain": "data/parquet",
   "title": "Parquet은 fastparquet 말고 pyarrow engine 사용",
   "content": "이 프로젝트에서 pandas DataFrame을 Parquet으로 쓸 때는 항상 `engine='pyarrow'`를 넘긴다. fastparquet은 폴백으로라도 쓰지 않는다.",
@@ -120,6 +138,8 @@ Output:
 {
   "id": "arch-022",
   "type": "code_pattern",
+  "intent": "decision",
+  "subject": "pipeline",
   "domain": "python/architecture",
   "title": "repository는 생성자로 session 주입받기",
   "content": "이 프로젝트의 repository 클래스는 데이터베이스 세션을 생성자 인자로 받는다. repository 안에서 세션을 만들지 않고, 컨텍스트 매니저도 쓰지 않는다. 세션 수명은 호출자가 소유하고 넘겨준다.",
@@ -144,6 +164,8 @@ Respond ONLY with JSON matching this schema. No markdown fences, no commentary, 
 {
   "id": "string",
   "type": "domain_rule|architecture_decision|debug_playbook|anti_pattern|tool_preference|code_pattern",
+  "intent": "constraint|decision|playbook|preference|open_question",
+  "subject": "data|model|pipeline|tooling|external",
   "taxon": "implementation_pattern|debugging_pattern|evaluation_rule|leakage_warning|environment_constraint|project_convention|user_preference|decision_rationale|anti_pattern|tool_usage_rule|deployment_note|research_hypothesis|unresolved_question",
   "domain": "area/subarea",
   "title": "짧은 하이브리드 한국어 제목 (기술용어는 영어)",

@@ -161,6 +161,48 @@ def evidence_based_grade(item: dict) -> str:
     return "C"
 
 
+# --- Classification facets (intent x subject) ---------------------------------
+# Two orthogonal axes that supersede the legacy single `type` field. A 2024
+# audit of the live store showed `type` mixed three different division axes
+# (motive / use / target), so a single concept (e.g. an operational-data
+# leakage warning) fragmented across 5 of the 6 types. Splitting motive
+# (intent) from target (subject) makes each axis near-MECE. See
+# docs/FACETS.md. `type`/`taxon` are retained for backward-compat.
+_TYPE_TO_INTENT = {
+    "anti_pattern":          "constraint",   # "don't — it breaks": a constraint
+    "domain_rule":           "constraint",   # "always X": a constraint to honor
+    "architecture_decision": "decision",
+    "code_pattern":          "decision",
+    "debug_playbook":        "playbook",
+    "tool_preference":       "preference",
+}
+_TAXON_TO_SUBJECT = {
+    "leakage_warning":        "data",
+    "environment_constraint": "data",
+    "evaluation_rule":        "model",
+    "debugging_pattern":      "model",
+    "implementation_pattern": "model",
+    "decision_rationale":     "model",
+    "anti_pattern":           "model",
+    "tool_usage_rule":        "external",
+    "deployment_note":        "external",
+}
+VALID_INTENTS = ("constraint", "decision", "playbook", "preference", "open_question")
+VALID_SUBJECTS = ("data", "model", "pipeline", "tooling", "external")
+
+
+def default_facets(type_name: str, taxon: str) -> tuple:
+    """Coarse (intent, subject) fallback derived from the legacy type/taxon.
+
+    Used only when an item carries no explicit intent/subject (an old row, or
+    an extractor that did not emit the new fields). Fine-grained per-card
+    labels come from the extractor (structure.xml) or the backfill seed.
+    """
+    intent = _TYPE_TO_INTENT.get(type_name, "constraint")
+    subject = _TAXON_TO_SUBJECT.get(taxon, "model")
+    return intent, subject
+
+
 def _json_or_default(value, default):
     if value in (None, ""):
         return default
@@ -369,6 +411,8 @@ def init_db(db_path: Optional[Path] = None):
         ("review_required",   "INTEGER DEFAULT 1"),
         ("safe_to_generalize", "INTEGER DEFAULT 0"),
         ("generalization_suggested", "INTEGER DEFAULT 0"),
+        ("intent",            "TEXT"),
+        ("subject",           "TEXT"),
     ]
     status_added = False
     for col, ddl in migrations:
@@ -492,9 +536,16 @@ def save_knowledge(db: sqlite3.Connection, item: dict):
     conflicts_with = item.get("conflicts_with", [])
     if not isinstance(conflicts_with, str):
         conflicts_with = json.dumps(conflicts_with, ensure_ascii=False)
+    intent = item.get("intent")
+    subject = item.get("subject")
+    if not intent or not subject:
+        di, ds = default_facets(item.get("type", ""),
+                                item.get("taxon", "implementation_pattern"))
+        intent = intent or di
+        subject = subject or ds
     db.execute("""
         INSERT OR REPLACE INTO knowledge
-        (id, type, taxon, domain, title, content, reasoning,
+        (id, type, taxon, intent, subject, domain, title, content, reasoning,
          scope, applies_when, does_not_apply_when, evidence_level,
          promotion_state, project_path, source_lineage, evidence_excerpt,
          counterexamples, conflicts_with, review_required, safe_to_generalize,
@@ -502,9 +553,10 @@ def save_knowledge(db: sqlite3.Connection, item: dict):
          related_scores, tags, usage_count, approved, archived, status,
          parent_id, detail_ids, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         item["id"], item["type"], item.get("taxon", "implementation_pattern"),
+        intent, subject,
         item["domain"], item["title"], item["content"], item.get("reasoning", ""),
         item.get("scope", "project"),
         item.get("applies_when", ""),

@@ -21,6 +21,12 @@ CREATE TABLE IF NOT EXISTS knowledge (
         'anti_pattern', 'tool_preference', 'code_pattern'
     )),
     taxon TEXT DEFAULT 'implementation_pattern',
+    -- Two orthogonal classification facets (supersede the single `type` axis).
+    -- `type` is kept for backward-compat; intent/subject are the 1st-class labels.
+    --   intent : constraint | decision | playbook | preference | open_question
+    --   subject: data | model | pipeline | tooling | external
+    intent TEXT,
+    subject TEXT,
     domain TEXT NOT NULL,
     title TEXT NOT NULL,
     content TEXT NOT NULL,

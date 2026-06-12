@@ -1,7 +1,7 @@
 """Mojo web dashboard — FastAPI backend + static SPA.
 
 Run: python dashboard/server.py
-Opens http://localhost:8765 in the default browser.
+Opens http://localhost:8766 in the default browser.
 """
 
 import hashlib
@@ -47,6 +47,8 @@ class KnowledgeIn(BaseModel):
     id: Optional[str] = None
     type: str
     taxon: Optional[str] = ""
+    intent: Optional[str] = None
+    subject: Optional[str] = None
     domain: str
     title: str
     content: str
@@ -82,6 +84,8 @@ class KnowledgeUpdate(BaseModel):
     domain: Optional[str] = None
     type: Optional[str] = None
     taxon: Optional[str] = None
+    intent: Optional[str] = None
+    subject: Optional[str] = None
     scope: Optional[str] = None
     applies_when: Optional[str] = None
     does_not_apply_when: Optional[str] = None
@@ -225,6 +229,8 @@ def create_knowledge(item: KnowledgeIn):
         "id": kid,
         "type": item.type,
         "taxon": item.taxon,
+        "intent": item.intent,
+        "subject": item.subject,
         "domain": item.domain,
         "title": item.title,
         "content": item.content,
@@ -865,7 +871,7 @@ def main():
     import webbrowser
 
     parser = argparse.ArgumentParser(description="Mojo Dashboard")
-    parser.add_argument("--port", type=int, default=8765, help="Port to bind (default: 8765)")
+    parser.add_argument("--port", type=int, default=8766, help="Port to bind (default: 8766)")
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind")
     parser.add_argument("--no-browser", action="store_true", help="Skip auto-opening browser")
     args = parser.parse_args()
